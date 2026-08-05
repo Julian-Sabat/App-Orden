@@ -13,7 +13,8 @@ const S = {
   tasks: [],
   completions: [],
   expandedTask: null,
-  proxFilter: "",   // id de categoría o ""
+  proxFilter: { cat: "", subs: [] },   // filtro: categoría + subcategorías (multi)
+  todasFilter: { cat: "", subs: [] },
   histFilter: "",
   undo: null,
   undoTimer: null,
@@ -106,11 +107,6 @@ function catBadge(catId) {
     .reduce((n, s) => n + subBadge(s.id), 0);
 }
 
-function catOfSub(subId) {
-  const sub = S.subcategories.find((s) => s.id === subId);
-  return sub ? S.categories.find((c) => c.id === sub.category_id) : null;
-}
-
 function sortByPosition(arr) {
   return [...arr].sort((a, b) => (a.position - b.position) || (a.created_at < b.created_at ? -1 : 1));
 }
@@ -142,6 +138,7 @@ function route() {
   if (parts[0] === "cat" && parts[1]) return { view: "cat", id: parts[1] };
   if (parts[0] === "sub" && parts[1]) return { view: "sub", id: parts[1] };
   if (parts[0] === "proximas") return { view: "proximas" };
+  if (parts[0] === "todas") return { view: "todas" };
   if (parts[0] === "historial") return { view: "historial" };
   return { view: "home" };
 }
@@ -162,6 +159,7 @@ function render() {
   else if (r.view === "cat") html = renderCat(r.id);
   else if (r.view === "sub") html = renderSub(r.id);
   else if (r.view === "proximas") html = renderProximas();
+  else if (r.view === "todas") html = renderTodas();
   else if (r.view === "historial") html = renderHistorial();
   app.innerHTML = html + renderNav(r.view);
 }
@@ -180,6 +178,7 @@ function renderNav(active) {
   const ICONS = {
     home: svg('<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/>'),
     proximas: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
+    todas: svg('<path d="M8.5 6h12M8.5 12h12M8.5 18h12M4 6h.01M4 12h.01M4 18h.01"/>'),
     historial: svg('<circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.2l2.4 2.4 4.6-5"/>'),
   };
   const item = (href, view, label) =>
@@ -189,6 +188,7 @@ function renderNav(active) {
   return `<nav class="bottomnav">
     ${item("#/", "home", "Categorías")}
     ${item("#/proximas", "proximas", "Próximas")}
+    ${item("#/todas", "todas", "Todas")}
     ${item("#/historial", "historial", "Historial")}
   </nav>`;
 }
@@ -325,10 +325,7 @@ function crumbOf(t) {
 // --- Vista Próximas ---
 function renderProximas() {
   const today = todayStr();
-  let items = S.tasks.filter((t) => isActive(t) && occDate(t));
-  if (S.proxFilter) {
-    items = items.filter((t) => catOfSub(t.subcategory_id)?.id === S.proxFilter);
-  }
+  let items = applyFilter(S.tasks.filter((t) => isActive(t) && occDate(t)), S.proxFilter);
   items.sort((a, b) => {
     const da = occDate(a), db = occDate(b);
     if (da !== db) return da < db ? -1 : 1;
@@ -349,8 +346,34 @@ function renderProximas() {
 
   return `${header("Próximas", null)}
   <main class="content">
-    ${filterChips("prox", S.proxFilter)}
-    ${body || `<p class="empty">No hay tareas con fecha${S.proxFilter ? " en esta categoría" : ""}.</p>`}
+    ${filterBar("prox", S.proxFilter)}
+    ${body || `<p class="empty">No hay tareas con fecha${S.proxFilter.cat ? " en este filtro" : ""}.</p>`}
+  </main>`;
+}
+
+// --- Vista Todas (todas las tareas, con o sin fecha) ---
+function renderTodas() {
+  const items = applyFilter(S.tasks.filter(isActive), S.todasFilter);
+  const sortKey = (t) => {
+    const d = occDate(t);
+    if (!d) return "1|";                       // sin fecha, al medio
+    return (d <= todayStr() ? "0|" : "2|") + d; // vencidas/hoy primero, futuras al final
+  };
+  const body = sortByPosition(S.categories).map((c) => {
+    const subs = sortByPosition(S.subcategories.filter((s) => s.category_id === c.id));
+    return subs.map((s) => {
+      const arr = items.filter((t) => t.subcategory_id === s.id)
+        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
+      if (!arr.length) return "";
+      return `<h2 class="section-title">${esc(c.name)} › ${esc(s.name)}</h2>
+        <div class="c${c.color % PALETTE_N}">${arr.map((t) => taskRow(t, false)).join("")}</div>`;
+    }).join("");
+  }).join("");
+
+  return `${header("Todas", null)}
+  <main class="content">
+    ${filterBar("todas", S.todasFilter)}
+    ${body || `<p class="empty">No hay tareas${S.todasFilter.cat ? " en este filtro" : " todavía"}.</p>`}
   </main>`;
 }
 
@@ -362,6 +385,35 @@ function filterChips(kind, current) {
     ${chip("", "Todas")}
     ${cats.map((c) => chip(c.id, c.name, `c${c.color % PALETTE_N}`)).join("")}
   </div>`;
+}
+
+// Barra de filtro con categoría + subcategorías multi-selección (Próximas y Todas)
+function filterBar(kind, f) {
+  const cats = sortByPosition(S.categories);
+  const chip = (action, id, label, active, colorCls, extra = "") =>
+    `<button class="fchip ${active ? "active" : ""} ${colorCls || ""} ${extra}" data-action="${action}" data-id="${id}">${esc(label)}</button>`;
+  let html = `<div class="fchips">
+    ${chip(`filter-${kind}`, "", "Todas", !f.cat)}
+    ${cats.map((c) => chip(`filter-${kind}`, c.id, c.name, f.cat === c.id, `c${c.color % PALETTE_N}`)).join("")}
+  </div>`;
+  if (f.cat) {
+    const cat = S.categories.find((c) => c.id === f.cat);
+    const subs = sortByPosition(S.subcategories.filter((s) => s.category_id === f.cat));
+    if (subs.length) {
+      html += `<div class="fchips fchips-sub">
+        ${subs.map((s) => chip(`filter-${kind}-sub`, s.id, s.name, f.subs.includes(s.id), `c${(cat?.color ?? 0) % PALETTE_N}`, "fchip-sm")).join("")}
+      </div>`;
+    }
+  }
+  return html;
+}
+
+// Aplica el filtro {cat, subs} a una lista de tareas
+function applyFilter(tasks, f) {
+  if (!f.cat) return tasks;
+  if (f.subs.length) return tasks.filter((t) => f.subs.includes(t.subcategory_id));
+  const subIds = S.subcategories.filter((s) => s.category_id === f.cat).map((s) => s.id);
+  return tasks.filter((t) => subIds.includes(t.subcategory_id));
 }
 
 // --- Historial ---
@@ -388,6 +440,7 @@ function renderHistorial() {
           <div class="task-title">${esc(c.title)}</div>
           <div class="crumb">${esc(c.category_name || "")}${c.subcategory_name ? " › " + esc(c.subcategory_name) : ""} · ${hh}</div>
         </div>
+        <button class="comp-del" data-action="del-comp" data-id="${c.id}" aria-label="Borrar registro">✕</button>
       </div>`;
     }).join("")}`).join("");
 
@@ -473,6 +526,7 @@ function taskModal(task, subId) {
         ${opt("semanal", "Cada semana")}
         ${opt("quincenal", "Cada 15 días")}
         ${opt("mensual", "Cada mes")}
+        ${opt("trimestral", "Cada 3 meses")}
         ${opt("anual", "Cada año")}
         ${opt("dia_del_mes", "Día específico del mes")}
       </select>
@@ -530,7 +584,25 @@ async function undoComplete() {
   }
 }
 
+function toggleSub(filter, subId) {
+  const i = filter.subs.indexOf(subId);
+  if (i >= 0) filter.subs.splice(i, 1);
+  else filter.subs.push(subId);
+}
+
+let moveInFlight = false;
+
 async function moveItem(table, id, dir) {
+  if (moveInFlight) return; // ignorar clics mientras se guarda el movimiento anterior
+  moveInFlight = true;
+  try {
+    await doMove(table, id, dir);
+  } finally {
+    moveInFlight = false;
+  }
+}
+
+async function doMove(table, id, dir) {
   const all = table === "categories"
     ? sortByPosition(S.categories)
     : sortByPosition(S.subcategories.filter(
@@ -629,10 +701,22 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
-  if (a === "move-cat") { closeModal(); return moveItem("categories", id, Number(el.dataset.dir)); }
-  if (a === "move-sub") { closeModal(); return moveItem("subcategories", id, Number(el.dataset.dir)); }
+  // mover sin cerrar el modal: se puede apretar varias veces seguidas
+  if (a === "move-cat") return moveItem("categories", id, Number(el.dataset.dir));
+  if (a === "move-sub") return moveItem("subcategories", id, Number(el.dataset.dir));
 
-  if (a === "filter-prox") { S.proxFilter = id; return render(); }
+  if (a === "del-comp") {
+    if (confirm("¿Borrar este registro del historial?")) {
+      try { await DB.remove("completions", id); } catch (err) { showToast("⚠️ " + err.message); }
+      await refreshData();
+    }
+    return;
+  }
+
+  if (a === "filter-prox") { S.proxFilter = { cat: id, subs: [] }; return render(); }
+  if (a === "filter-prox-sub") { toggleSub(S.proxFilter, id); return render(); }
+  if (a === "filter-todas") { S.todasFilter = { cat: id, subs: [] }; return render(); }
+  if (a === "filter-todas-sub") { toggleSub(S.todasFilter, id); return render(); }
   if (a === "filter-hist") { S.histFilter = id; return render(); }
 });
 
@@ -717,7 +801,7 @@ document.addEventListener("submit", async (e) => {
         } else {
           date = date || todayStr();
           recurrence = { tipo: repeat };
-          if (repeat === "mensual" || repeat === "anual") {
+          if (["mensual", "trimestral", "anual"].includes(repeat)) {
             recurrence.dia_ancla = Number(date.split("-")[2]);
           }
         }

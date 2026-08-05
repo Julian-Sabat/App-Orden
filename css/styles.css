@@ -451,6 +451,23 @@ button { font-family: inherit; }
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
+.fchips-sub { margin-top: -2px; padding-left: 14px; }
+
+.fchip-sm { padding: 5px 12px; font-size: 12px; }
+
+.comp-del {
+  align-self: center;
+  background: none;
+  border: none;
+  color: color-mix(in srgb, var(--muted) 60%, transparent);
+  font-size: 14px;
+  padding: 6px 2px 6px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.comp-del:hover { color: var(--danger); }
+
 .fchip.active {
   background: var(--accent, var(--primary));
   border-color: var(--accent, var(--primary));

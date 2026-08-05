@@ -15,7 +15,7 @@ const S = {
   expandedTask: null,
   proxFilter: { cat: "", subs: [] },   // filtro: categoría + subcategorías (multi)
   todasFilter: { cat: "", subs: [] },
-  histFilter: "",
+  histFilter: { cat: "", subs: [] },
   undo: null,
   undoTimer: null,
 };
@@ -377,17 +377,7 @@ function renderTodas() {
   </main>`;
 }
 
-function filterChips(kind, current) {
-  const cats = sortByPosition(S.categories);
-  const chip = (id, label, colorCls) =>
-    `<button class="fchip ${current === id ? "active" : ""} ${colorCls || ""}" data-action="filter-${kind}" data-id="${id}">${esc(label)}</button>`;
-  return `<div class="fchips">
-    ${chip("", "Todas")}
-    ${cats.map((c) => chip(c.id, c.name, `c${c.color % PALETTE_N}`)).join("")}
-  </div>`;
-}
-
-// Barra de filtro con categoría + subcategorías multi-selección (Próximas y Todas)
+// Barra de filtro con categoría + subcategorías multi-selección (Próximas, Todas e Historial)
 function filterBar(kind, f) {
   const cats = sortByPosition(S.categories);
   const chip = (action, id, label, active, colorCls, extra = "") =>
@@ -419,9 +409,15 @@ function applyFilter(tasks, f) {
 // --- Historial ---
 function renderHistorial() {
   let comps = [...S.completions].sort((a, b) => (a.completed_at < b.completed_at ? 1 : -1));
-  if (S.histFilter) {
-    const cat = S.categories.find((c) => c.id === S.histFilter);
+  // el historial guarda nombres (snapshot), así que se filtra por nombre
+  const f = S.histFilter;
+  if (f.cat) {
+    const cat = S.categories.find((c) => c.id === f.cat);
     if (cat) comps = comps.filter((c) => c.category_name === cat.name);
+    if (f.subs.length) {
+      const subNames = S.subcategories.filter((s) => f.subs.includes(s.id)).map((s) => s.name);
+      comps = comps.filter((c) => subNames.includes(c.subcategory_name));
+    }
   }
   const groups = {};
   for (const c of comps) {
@@ -446,8 +442,8 @@ function renderHistorial() {
 
   return `${header("Historial", null)}
   <main class="content">
-    ${filterChips("hist", S.histFilter)}
-    ${body || `<p class="empty">Aún no hay tareas realizadas${S.histFilter ? " en esta categoría" : ""}.</p>`}
+    ${filterBar("hist", S.histFilter)}
+    ${body || `<p class="empty">Aún no hay tareas realizadas${S.histFilter.cat ? " en este filtro" : ""}.</p>`}
   </main>`;
 }
 
@@ -717,7 +713,8 @@ document.addEventListener("click", async (e) => {
   if (a === "filter-prox-sub") { toggleSub(S.proxFilter, id); return render(); }
   if (a === "filter-todas") { S.todasFilter = { cat: id, subs: [] }; return render(); }
   if (a === "filter-todas-sub") { toggleSub(S.todasFilter, id); return render(); }
-  if (a === "filter-hist") { S.histFilter = id; return render(); }
+  if (a === "filter-hist") { S.histFilter = { cat: id, subs: [] }; return render(); }
+  if (a === "filter-hist-sub") { toggleSub(S.histFilter, id); return render(); }
 });
 
 document.addEventListener("change", (e) => {
@@ -831,6 +828,15 @@ document.addEventListener("submit", async (e) => {
     showToast("⚠️ " + err.message);
   }
 });
+
+// En PC: la rueda del mouse desplaza horizontalmente las filas de chips
+document.addEventListener("wheel", (e) => {
+  const row = e.target.closest(".fchips");
+  if (row && row.scrollWidth > row.clientWidth && !e.deltaX && e.deltaY) {
+    row.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }
+}, { passive: false });
 
 window.addEventListener("hashchange", () => {
   S.expandedTask = null;

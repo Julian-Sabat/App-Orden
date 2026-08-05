@@ -433,10 +433,16 @@ button { font-family: inherit; }
   padding: 2px 2px 8px;
   margin-bottom: 4px;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted) 40%, transparent) transparent;
 }
 
-.fchips::-webkit-scrollbar { display: none; }
+.fchips::-webkit-scrollbar { height: 5px; }
+.fchips::-webkit-scrollbar-track { background: transparent; }
+.fchips::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 3px;
+}
 
 .fchip {
   flex-shrink: 0;

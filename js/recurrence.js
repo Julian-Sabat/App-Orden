@@ -42,6 +42,7 @@ export function nextOccurrence(dateStr, rule) {
     case "semanal": return addDays(dateStr, 7);
     case "quincenal": return addDays(dateStr, 14);
     case "mensual": return addMonths(dateStr, 1, rule.dia_ancla);
+    case "trimestral": return addMonths(dateStr, 3, rule.dia_ancla);
     case "anual": return addMonths(dateStr, 12, rule.dia_ancla);
     case "dia_del_mes": return addMonths(dateStr, 1, rule.dia);
     default: return addDays(dateStr, 1);
@@ -75,6 +76,7 @@ export function describeRecurrence(rule) {
     case "semanal": return "cada semana";
     case "quincenal": return "cada 15 días";
     case "mensual": return "cada mes";
+    case "trimestral": return "cada 3 meses";
     case "anual": return "cada año";
     case "dia_del_mes": return `los días ${rule.dia} de cada mes`;
     default: return "";

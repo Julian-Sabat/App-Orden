@@ -1,6 +1,6 @@
 import * as DB from "./db.js";
 import {
-  todayStr, parseDate, advancePastToday, firstDayOfMonthOccurrence, describeRecurrence,
+  todayStr, parseDate, nextOccurrence, advancePastToday, firstDayOfMonthOccurrence, firstFechasOccurrence, describeRecurrence,
 } from "./recurrence.js";
 
 // ---------- Estado ----------
@@ -92,9 +92,10 @@ function isDue(t) {
   return !t.done && t.due_date && t.due_date <= todayStr();
 }
 
-// ¿Se muestra en listas de pendientes?
+// ¿Se muestra en listas de pendientes? (una recurrente por fechas específicas
+// agotadas queda done y sale de las listas, igual que una tarea simple)
 function isActive(t) {
-  return t.recurrence ? true : !t.done;
+  return !t.done;
 }
 
 function subBadge(subId) {
@@ -161,7 +162,17 @@ function render() {
   else if (r.view === "proximas") html = renderProximas();
   else if (r.view === "todas") html = renderTodas();
   else if (r.view === "historial") html = renderHistorial();
-  app.innerHTML = html + renderNav(r.view);
+  app.innerHTML = html + renderFab(r) + renderNav(r.view);
+}
+
+// FAB de nueva tarea, visible en todas las vistas; en una subcategoría crea directo ahí
+function renderFab(r) {
+  const attrs = r.view === "sub"
+    ? `data-action="new-task" data-sub="${r.id}"`
+    : `data-action="new-task-any"`;
+  return `<button class="fab" ${attrs} aria-label="Nueva tarea">
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>`;
 }
 
 function header(title, backHref, right = "") {
@@ -198,15 +209,50 @@ function badgeHtml(n) {
 }
 
 // --- Login ---
+const SAVED_LOGIN_KEY = "orden_saved_login";
+
+function savedLogin() {
+  try {
+    const raw = localStorage.getItem(SAVED_LOGIN_KEY);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s.email && s.pw) return { email: s.email, password: atob(s.pw) };
+    }
+  } catch (e) { /* corrupto: ignorar */ }
+  return null;
+}
+
+function saveLogin(email, password) {
+  localStorage.setItem(SAVED_LOGIN_KEY, JSON.stringify({ email, pw: btoa(password) }));
+}
+
+function clearSavedLogin() {
+  localStorage.removeItem(SAVED_LOGIN_KEY);
+}
+
+// Reintenta entrar con los datos guardados (solo al arrancar, nunca tras logout manual)
+async function tryAutoLogin() {
+  const saved = savedLogin();
+  if (!saved) return false;
+  try {
+    await DB.signIn(saved.email, saved.password);
+    return true;
+  } catch (e) {
+    return false; // contraseña cambiada o sin red: se muestra el login normal
+  }
+}
+
 function renderLogin() {
+  const saved = savedLogin();
   return `<div class="login-wrap">
     <div class="login-card">
       <div class="login-logo">✓</div>
       <h1>Orden</h1>
       <p class="muted">Inicia sesión para ver tus tareas</p>
       <form data-form="login">
-        <input type="email" name="email" placeholder="Email" required autocomplete="email" />
-        <input type="password" name="password" placeholder="Contraseña" required autocomplete="current-password" />
+        <input type="email" name="email" placeholder="Email" required autocomplete="email" value="${esc(saved?.email || "")}" />
+        <input type="password" name="password" placeholder="Contraseña" required autocomplete="current-password" value="${esc(saved?.password || "")}" />
+        <label class="remember-row"><input type="checkbox" name="remember" ${saved || !localStorage.getItem(SAVED_LOGIN_KEY + "_optout") ? "checked" : ""} /> Recordar mis datos en este dispositivo</label>
         <div class="form-error" id="login-error"></div>
         <button type="submit" class="btn-primary">Entrar</button>
       </form>
@@ -233,12 +279,9 @@ function renderHome() {
     : `<span class="local-chip" title="Datos solo en este dispositivo">local</span>`);
   return `${header("Orden", null, right)}
   <main class="content">
-    ${items || `<p class="empty">Sin categorías todavía.<br>Crea la primera para empezar.</p>`}
+    ${items ? `<div class="card-list">${items}</div>` : `<p class="empty">Sin categorías todavía.<br>Crea la primera para empezar.</p>`}
     <button class="btn-add" data-action="new-cat">+ Nueva categoría</button>
-  </main>
-  <button class="fab" data-action="new-task-any" aria-label="Nueva tarea">
-    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-  </button>`;
+  </main>`;
 }
 
 // --- Subcategorías de una categoría ---
@@ -257,7 +300,7 @@ function renderCat(catId) {
     </div>`).join("");
   return `${header(cat.name, "#/")}
   <main class="content">
-    ${items || `<p class="empty">Sin subcategorías todavía.</p>`}
+    ${items ? `<div class="card-list">${items}</div>` : `<p class="empty">Sin subcategorías todavía.</p>`}
     <button class="btn-add" data-action="new-sub" data-cat="${catId}">+ Nueva subcategoría</button>
   </main>`;
 }
@@ -275,7 +318,7 @@ function renderSub(subId) {
     .sort((a, b) => (occDate(a) > occDate(b) ? 1 : -1));
 
   const section = (title, arr) => arr.length
-    ? `<h2 class="section-title">${title}</h2>${arr.map((t) => taskRow(t, false)).join("")}`
+    ? `<h2 class="section-title">${title}</h2><div class="task-list">${arr.map((t) => taskRow(t, false)).join("")}</div>`
     : "";
 
   return `${header(sub.name, `#/cat/${sub.category_id}`)}
@@ -341,7 +384,7 @@ function renderProximas() {
   ];
   const body = groups.map((g) => {
     const arr = items.filter((t) => g.test(occDate(t)));
-    return arr.length ? `<h2 class="section-title">${g.title}</h2>${arr.map((t) => taskRow(t, true)).join("")}` : "";
+    return arr.length ? `<h2 class="section-title">${g.title}</h2><div class="task-list">${arr.map((t) => taskRow(t, true)).join("")}</div>` : "";
   }).join("");
 
   return `${header("Próximas", null)}
@@ -365,15 +408,17 @@ function renderTodas() {
       const arr = items.filter((t) => t.subcategory_id === s.id)
         .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
       if (!arr.length) return "";
-      return `<h2 class="section-title">${esc(c.name)} › ${esc(s.name)}</h2>
-        <div class="c${c.color % PALETTE_N}">${arr.map((t) => taskRow(t, false)).join("")}</div>`;
+      return `<section class="group">
+        <h2 class="section-title">${esc(c.name)} › ${esc(s.name)}</h2>
+        <div class="c${c.color % PALETTE_N}">${arr.map((t) => taskRow(t, false)).join("")}</div>
+      </section>`;
     }).join("");
   }).join("");
 
   return `${header("Todas", null)}
   <main class="content">
     ${filterBar("todas", S.todasFilter)}
-    ${body || `<p class="empty">No hay tareas${S.todasFilter.cat ? " en este filtro" : " todavía"}.</p>`}
+    ${body ? `<div class="group-cols">${body}</div>` : `<p class="empty">No hay tareas${S.todasFilter.cat ? " en este filtro" : " todavía"}.</p>`}
   </main>`;
 }
 
@@ -426,6 +471,7 @@ function renderHistorial() {
     (groups[key] ||= []).push(c);
   }
   const body = Object.keys(groups).map((day) => `
+    <section class="group">
     <h2 class="section-title">${fmtShort(day)}</h2>
     ${groups[day].map((c) => {
       const time = new Date(c.completed_at);
@@ -438,12 +484,13 @@ function renderHistorial() {
         </div>
         <button class="comp-del" data-action="del-comp" data-id="${c.id}" aria-label="Borrar registro">✕</button>
       </div>`;
-    }).join("")}`).join("");
+    }).join("")}
+    </section>`).join("");
 
   return `${header("Historial", null)}
   <main class="content">
     ${filterBar("hist", S.histFilter)}
-    ${body || `<p class="empty">Aún no hay tareas realizadas${S.histFilter.cat ? " en este filtro" : ""}.</p>`}
+    ${body ? `<div class="group-cols">${body}</div>` : `<p class="empty">Aún no hay tareas realizadas${S.histFilter.cat ? " en este filtro" : ""}.</p>`}
   </main>`;
 }
 
@@ -490,6 +537,12 @@ function subModal(sub, catId) {
   </form>`);
 }
 
+function fechaChipsHtml(fechas) {
+  return [...fechas].sort().map((f) =>
+    `<span class="fecha-chip">${fmtShort(f)}<button type="button" data-action="del-fecha" data-date="${f}" aria-label="Quitar fecha">✕</button></span>`
+  ).join("") || `<span class="hint">Sin fechas todavía. Agrega una o más.</span>`;
+}
+
 function taskModal(task, subId) {
   const rec = task?.recurrence;
   const dateVal = task ? (rec ? task.next_due : task.due_date) || "" : "";
@@ -512,7 +565,7 @@ function taskModal(task, subId) {
     ${subPicker}
     <textarea name="description" placeholder="Descripción (opcional)" rows="3">${esc(task?.description || "")}</textarea>
     <div class="form-row">
-      <label>Fecha <input type="date" name="date" value="${dateVal}" /></label>
+      <label id="date-label" style="display:${rec?.tipo === "fechas" ? "none" : ""}">Fecha <input type="date" name="date" value="${dateVal}" /></label>
       <label>Hora <input type="time" name="time" value="${task?.due_time ? task.due_time.slice(0, 5) : ""}" /></label>
     </div>
     <label>Repetir
@@ -525,11 +578,23 @@ function taskModal(task, subId) {
         ${opt("trimestral", "Cada 3 meses")}
         ${opt("anual", "Cada año")}
         ${opt("dia_del_mes", "Día específico del mes")}
+        ${opt("fechas", "Fechas específicas")}
       </select>
     </label>
     <label id="dia-row" style="display:${rec?.tipo === "dia_del_mes" ? "block" : "none"}">Día del mes (1–31)
       <input type="number" name="dia" min="1" max="31" value="${rec?.dia || ""}" />
     </label>
+    <div id="fechas-row" style="display:${rec?.tipo === "fechas" ? "block" : "none"}">
+      <label>Agregar fecha
+        <div class="fecha-add">
+          <input type="date" id="fecha-pick" />
+          <button type="button" class="btn-small" data-action="add-fecha">+ Agregar</button>
+        </div>
+      </label>
+      <div class="fecha-chips" id="fecha-chips">${fechaChipsHtml(rec?.fechas || [])}</div>
+      <input type="hidden" name="fechas" value="${esc(JSON.stringify(rec?.fechas || []))}" />
+      <label class="check-row"><input type="checkbox" name="fechas_anual" ${rec?.anual ? "checked" : ""} /> Repetir estas fechas cada año</label>
+    </div>
     <p class="hint" id="rec-hint" style="display:none">Las tareas que se repiten necesitan una fecha; si no eliges una, se usa la más cercana.</p>
     <div class="modal-actions">
       <button type="submit" class="btn-primary">Guardar</button>
@@ -543,12 +608,16 @@ async function completeTask(id) {
   if (!t) return;
   const sub = S.subcategories.find((s) => s.id === t.subcategory_id);
   const cat = sub ? S.categories.find((c) => c.id === sub.category_id) : null;
-  const prevPatch = t.recurrence ? { next_due: t.next_due } : { done: t.done };
+  const prevPatch = t.recurrence ? { next_due: t.next_due, done: t.done } : { done: t.done };
   try {
     if (t.recurrence) {
+      // Completar consume la ocurrencia vigente (aunque sea futura, ej. pago adelantado);
+      // si la siguiente quedó en el pasado, catch-up hasta pasar hoy.
       const base = t.next_due || t.due_date || todayStr();
-      const next = advancePastToday(base, t.recurrence, todayStr());
-      await DB.update("tasks", id, { next_due: next });
+      let next = nextOccurrence(base, t.recurrence);
+      if (next && next <= todayStr()) next = advancePastToday(next, t.recurrence, todayStr());
+      // next null = fechas específicas agotadas sin repetición anual: la tarea termina
+      await DB.update("tasks", id, next ? { next_due: next } : { next_due: null, done: true });
     } else {
       await DB.update("tasks", id, { done: true });
     }
@@ -647,7 +716,13 @@ document.addEventListener("click", async (e) => {
     return render();
   }
   if (a === "logout") {
-    if (confirm("¿Cerrar sesión?")) { DB.clearCache(); await DB.signOut(); render(); }
+    const extra = savedLogin() ? " Se borrarán también los datos de login guardados." : "";
+    if (confirm("¿Cerrar sesión?" + extra)) {
+      clearSavedLogin();
+      DB.clearCache();
+      await DB.signOut();
+      render();
+    }
     return;
   }
   if (a === "expand") {
@@ -709,6 +784,31 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
+  if (a === "add-fecha") {
+    const form = el.closest("form");
+    const pick = form.querySelector("#fecha-pick");
+    if (!pick.value) return;
+    const hidden = form.querySelector('input[name="fechas"]');
+    let list = [];
+    try { list = JSON.parse(hidden.value || "[]"); } catch (err) { /* corrupto: partir de cero */ }
+    if (!list.includes(pick.value)) list.push(pick.value);
+    list.sort();
+    hidden.value = JSON.stringify(list);
+    form.querySelector("#fecha-chips").innerHTML = fechaChipsHtml(list);
+    pick.value = "";
+    return;
+  }
+  if (a === "del-fecha") {
+    const form = el.closest("form");
+    const hidden = form.querySelector('input[name="fechas"]');
+    let list = [];
+    try { list = JSON.parse(hidden.value || "[]"); } catch (err) { /* corrupto: partir de cero */ }
+    list = list.filter((f) => f !== el.dataset.date);
+    hidden.value = JSON.stringify(list);
+    form.querySelector("#fecha-chips").innerHTML = fechaChipsHtml(list);
+    return;
+  }
+
   if (a === "filter-prox") { S.proxFilter = { cat: id, subs: [] }; return render(); }
   if (a === "filter-prox-sub") { toggleSub(S.proxFilter, id); return render(); }
   if (a === "filter-todas") { S.todasFilter = { cat: id, subs: [] }; return render(); }
@@ -720,8 +820,11 @@ document.addEventListener("click", async (e) => {
 document.addEventListener("change", (e) => {
   if (e.target.matches('select[name="repeat"]')) {
     const form = e.target.closest("form");
-    form.querySelector("#dia-row").style.display = e.target.value === "dia_del_mes" ? "block" : "none";
-    form.querySelector("#rec-hint").style.display = e.target.value ? "block" : "none";
+    const v = e.target.value;
+    form.querySelector("#dia-row").style.display = v === "dia_del_mes" ? "block" : "none";
+    form.querySelector("#fechas-row").style.display = v === "fechas" ? "block" : "none";
+    form.querySelector("#date-label").style.display = v === "fechas" ? "none" : "";
+    form.querySelector("#rec-hint").style.display = v && v !== "fechas" ? "block" : "none";
   }
 });
 
@@ -737,7 +840,16 @@ document.addEventListener("submit", async (e) => {
       const btn = form.querySelector("button[type=submit]");
       btn.disabled = true; btn.textContent = "Entrando…";
       try {
-        await DB.signIn(fd.get("email").trim(), fd.get("password"));
+        const email = fd.get("email").trim();
+        const password = fd.get("password");
+        await DB.signIn(email, password);
+        if (fd.get("remember")) {
+          saveLogin(email, password);
+          localStorage.removeItem(SAVED_LOGIN_KEY + "_optout");
+        } else {
+          clearSavedLogin();
+          localStorage.setItem(SAVED_LOGIN_KEY + "_optout", "1");
+        }
         const migrated = await DB.migrateLocalToRemote();
         if (migrated) showToast("Datos locales migrados a tu cuenta ✓");
         await refreshData();
@@ -791,7 +903,14 @@ document.addEventListener("submit", async (e) => {
       let next_due = null;
 
       if (repeat) {
-        if (repeat === "dia_del_mes") {
+        if (repeat === "fechas") {
+          let fechas = [];
+          try { fechas = JSON.parse(fd.get("fechas") || "[]"); } catch (err) { /* corrupto */ }
+          fechas = [...new Set(fechas)].sort();
+          if (!fechas.length) return showToast("⚠️ Agrega al menos una fecha a la lista");
+          recurrence = { tipo: "fechas", fechas, anual: !!fd.get("fechas_anual") };
+          date = firstFechasOccurrence(recurrence, todayStr());
+        } else if (repeat === "dia_del_mes") {
           const dia = Math.min(31, Math.max(1, Number(fd.get("dia") || 1)));
           recurrence = { tipo: "dia_del_mes", dia };
           date = date || firstDayOfMonthOccurrence(dia, todayStr());
@@ -860,6 +979,9 @@ async function main() {
   }
   S.remote = DB.isRemote();
   S.session = DB.getSession();
+  if (S.remote && !S.session && (await tryAutoLogin())) {
+    S.session = DB.getSession();
+  }
   if (S.remote && S.session) hydrateFromCache();
   render();
   if (!S.remote || S.session) await refreshData();

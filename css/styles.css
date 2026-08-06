@@ -544,6 +544,61 @@ button { font-family: inherit; }
 .form-row { display: flex; gap: 10px; }
 .form-row label { flex: 1; }
 
+/* fila con checkbox (modal y login) */
+.modal-card .check-row, .login-card .remember-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.modal-card .check-row input, .login-card .remember-row input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+/* editor de fechas específicas */
+.fecha-add { display: flex; gap: 8px; margin-top: 5px; }
+.fecha-add input { flex: 1; margin-top: 0; }
+.fecha-add .btn-small { flex-shrink: 0; }
+
+.fecha-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+
+.fecha-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 6px 5px 12px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+}
+
+.fecha-chip button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.fecha-chip button:hover { color: var(--danger); }
+
 .hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
 
 .modal-actions {
@@ -613,6 +668,35 @@ button { font-family: inherit; }
 }
 
 .form-error { color: var(--danger); font-size: 13px; min-height: 16px; }
+
+/* ---------- Escritorio: aprovechar el ancho ---------- */
+@media (min-width: 900px) {
+  .content { max-width: 1200px; }
+
+  /* tareas y cards en grilla de 2-3 columnas según ancho */
+  .task-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 10px;
+    align-items: start;
+  }
+  .task-list .task { margin-bottom: 0; }
+
+  .card-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 10px;
+  }
+  .card-list .card { margin-bottom: 0; }
+
+  /* Todas e Historial: grupos pequeños fluyen en columnas tipo diario */
+  .group-cols { columns: 2; column-gap: 20px; }
+  .group { break-inside: avoid; margin-bottom: 8px; }
+}
+
+@media (min-width: 1400px) {
+  .group-cols { columns: 3; }
+}
 
 /* ---------- Toast ---------- */
 #toast {

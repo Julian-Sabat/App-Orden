@@ -35,7 +35,27 @@ function addMonths(s, n, targetDay) {
   return fmt(y, m, Math.min(day, daysInMonth(y, m)));
 }
 
-// Avanza una ocurrencia según la regla
+// Fechas específicas: próxima fecha de la lista estrictamente posterior a dateStr.
+// Si anual, las fechas actúan como anclas mes-día que se repiten cada año (con clamp 29 feb → 28).
+// Devuelve null cuando la lista se agotó y no es anual (la tarea termina).
+function nextFecha(dateStr, rule) {
+  const fechas = [...(rule.fechas || [])].sort();
+  if (!fechas.length) return null;
+  for (const f of fechas) if (f > dateStr) return f;
+  if (!rule.anual) return null;
+  const anchors = [...new Set(fechas.map((f) => f.slice(5)))].sort();
+  const y0 = parseDate(dateStr).getFullYear();
+  for (const y of [y0, y0 + 1]) {
+    for (const a of anchors) {
+      const [m, d] = a.split("-").map(Number);
+      const cand = fmt(y, m, Math.min(d, daysInMonth(y, m)));
+      if (cand > dateStr) return cand;
+    }
+  }
+  return null;
+}
+
+// Avanza una ocurrencia según la regla (null = la recurrencia terminó)
 export function nextOccurrence(dateStr, rule) {
   switch (rule.tipo) {
     case "diaria": return addDays(dateStr, 1);
@@ -45,6 +65,7 @@ export function nextOccurrence(dateStr, rule) {
     case "trimestral": return addMonths(dateStr, 3, rule.dia_ancla);
     case "anual": return addMonths(dateStr, 12, rule.dia_ancla);
     case "dia_del_mes": return addMonths(dateStr, 1, rule.dia);
+    case "fechas": return nextFecha(dateStr, rule);
     default: return addDays(dateStr, 1);
   }
 }
@@ -54,11 +75,21 @@ export function nextOccurrence(dateStr, rule) {
 export function advancePastToday(dateStr, rule, today) {
   let next = dateStr;
   let guard = 0;
-  while (next <= today && guard < 5000) {
+  while (next && next <= today && guard < 5000) {
     next = nextOccurrence(next, rule);
     guard++;
   }
   return next;
+}
+
+// Primera ocurrencia para una tarea nueva de fechas específicas:
+// la primera fecha no vencida (hoy incluido); si todas pasaron, la que
+// tocaría el año siguiente (anual) o la última de la lista (queda atrasada).
+export function firstFechasOccurrence(rule, today) {
+  const fechas = [...(rule.fechas || [])].sort();
+  if (!fechas.length) return null;
+  for (const f of fechas) if (f >= today) return f;
+  return rule.anual ? nextFecha(today, rule) : fechas[fechas.length - 1];
 }
 
 // Primera ocurrencia para una tarea nueva de tipo dia_del_mes (hoy o el próximo día N)
@@ -79,6 +110,10 @@ export function describeRecurrence(rule) {
     case "trimestral": return "cada 3 meses";
     case "anual": return "cada año";
     case "dia_del_mes": return `los días ${rule.dia} de cada mes`;
+    case "fechas": {
+      const n = (rule.fechas || []).length;
+      return `${n} fecha${n === 1 ? "" : "s"} específica${n === 1 ? "" : "s"}${rule.anual ? " · cada año" : ""}`;
+    }
     default: return "";
   }
 }

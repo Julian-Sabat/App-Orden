@@ -1,6 +1,6 @@
 // Service worker: cachea el shell de la app para carga rápida e instalación PWA.
 // Subir la versión al desplegar cambios para invalidar el cache.
-const CACHE = "orden-v5";
+const CACHE = "orden-v6";
 const SHELL = [
   "./",
   "./index.html",

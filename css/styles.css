@@ -689,9 +689,13 @@ button { font-family: inherit; }
   }
   .card-list .card { margin-bottom: 0; }
 
-  /* Todas e Historial: grupos pequeños fluyen en columnas tipo diario */
-  .group-cols { columns: 2; column-gap: 20px; }
-  .group { break-inside: avoid; margin-bottom: 8px; }
+  /* Todas e Historial: grupos pequeños fluyen en columnas tipo diario.
+     Los títulos van sin margen superior (los quiebres de columna lo truncan
+     y desalinean el tope de las columnas); el ritmo lo dan el contenedor y
+     el margen inferior de cada grupo. */
+  .group-cols { columns: 2; column-gap: 20px; margin-top: 12px; }
+  .group { break-inside: avoid; margin-bottom: 14px; }
+  .group .section-title { margin-top: 0; }
 }
 
 @media (min-width: 1400px) {

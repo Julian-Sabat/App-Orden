@@ -547,15 +547,18 @@ function taskModal(task, subId) {
   const rec = task?.recurrence;
   const dateVal = task ? (rec ? task.next_due : task.due_date) || "" : "";
   const opt = (v, label) => `<option value="${v}" ${rec?.tipo === v ? "selected" : ""}>${label}</option>`;
-  const needsPicker = !task && !subId;
-  const subPicker = needsPicker ? `
+  // Al editar siempre se muestra el selector (permite mover la tarea de subcategoría);
+  // al crear desde una subcategoría concreta el destino ya está fijado.
+  const currentSub = task?.subcategory_id || subId || "";
+  const showPicker = !!task || !subId;
+  const subPicker = showPicker ? `
     <label>Subcategoría
       <select name="subcat" required>
-        <option value="">Elegir…</option>
+        <option value="" ${currentSub ? "" : "selected"}>Elegir…</option>
         ${sortByPosition(S.categories).map((c) => `
           <optgroup label="${esc(c.name)}">
             ${sortByPosition(S.subcategories.filter((s) => s.category_id === c.id))
-              .map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("")}
+              .map((s) => `<option value="${s.id}" ${s.id === currentSub ? "selected" : ""}>${esc(s.name)}</option>`).join("")}
           </optgroup>`).join("")}
       </select>
     </label>` : "";
@@ -828,12 +831,34 @@ document.addEventListener("change", (e) => {
   }
 });
 
+// Título normalizado para comparar duplicados: sin espacios sobrantes ni mayúsculas.
+function normTitle(s) {
+  return (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Busca una tarea vigente (no completada) con el mismo título en la misma subcategoría.
+function findDuplicateTask(title, subId, ignoreId) {
+  const key = normTitle(title);
+  return S.tasks.find((t) =>
+    t.id !== ignoreId && !t.done && t.subcategory_id === subId && normTitle(t.title) === key
+  );
+}
+
+// Un solo guardado a la vez: si Supabase tarda, los taps repetidos en "Guardar"
+// se ignoran en vez de disparar un insert por cada uno.
+let submitInFlight = false;
+
 document.addEventListener("submit", async (e) => {
   const form = e.target.closest("form[data-form]");
   if (!form) return;
   e.preventDefault();
+  if (submitInFlight) return;
   const kind = form.dataset.form;
   const fd = new FormData(form);
+  const btn = kind === "login" ? null : form.querySelector("button[type=submit]");
+  const btnLabel = btn ? btn.textContent : null;
+  submitInFlight = true;
+  if (btn) { btn.disabled = true; btn.textContent = "Guardando…"; }
 
   try {
     if (kind === "login") {
@@ -873,7 +898,8 @@ document.addEventListener("submit", async (e) => {
         });
       }
       closeModal();
-      return refreshData();
+      await refreshData();
+      return;
     }
 
     if (kind === "save-sub") {
@@ -890,7 +916,8 @@ document.addEventListener("submit", async (e) => {
         });
       }
       closeModal();
-      return refreshData();
+      await refreshData();
+      return;
     }
 
     if (kind === "save-task") {
@@ -924,8 +951,15 @@ document.addEventListener("submit", async (e) => {
         next_due = date;
       }
 
+      const targetSub = fd.get("subcat") || form.dataset.sub;
+      if (!targetSub) return;
+      if (findDuplicateTask(title, targetSub, form.dataset.id || null)) {
+        return showToast("⚠️ Ya tienes esa tarea en esa subcategoría");
+      }
+
       const patch = {
         title,
+        subcategory_id: targetSub,
         description: fd.get("description").trim() || null,
         due_date: date,
         due_time: time,
@@ -936,15 +970,17 @@ document.addEventListener("submit", async (e) => {
       if (form.dataset.id) {
         await DB.update("tasks", form.dataset.id, patch);
       } else {
-        const targetSub = form.dataset.sub || fd.get("subcat");
-        if (!targetSub) return;
-        await DB.insert("tasks", { ...patch, subcategory_id: targetSub });
+        await DB.insert("tasks", patch);
       }
       closeModal();
-      return refreshData();
+      await refreshData();
+      return;
     }
   } catch (err) {
     showToast("⚠️ " + err.message);
+  } finally {
+    submitInFlight = false;
+    if (btn && document.contains(btn)) { btn.disabled = false; btn.textContent = btnLabel; }
   }
 });
 

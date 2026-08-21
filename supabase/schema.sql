@@ -64,3 +64,10 @@ create policy "own rows" on public.tasks
 drop policy if exists "own rows" on public.completions;
 create policy "own rows" on public.completions
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Sin tareas duplicadas: misma subcategoría + mismo título (normalizado) entre las
+-- tareas vigentes. Parcial (done = false) para permitir recrearla tras completarla.
+-- En una base con datos previos, correr antes migracion_2026-08-21_tareas_unicas.sql.
+create unique index if not exists tasks_sin_duplicados
+  on public.tasks (user_id, subcategory_id, lower(btrim(title)))
+  where done = false;

@@ -127,7 +127,7 @@ export async function fetchAll() {
 function msgEscritura(error, verbo, table) {
   if (error.code === "23505") {
     return table === "tasks"
-      ? "Ya tienes esa tarea en esa subcategoría."
+      ? "Esa tarea ya existe: mismo título, descripción, fecha y hora."
       : "Ya existe un registro igual.";
   }
   return `No se pudo ${verbo}: ${error.message}`;

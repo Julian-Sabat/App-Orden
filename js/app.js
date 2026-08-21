@@ -831,17 +831,28 @@ document.addEventListener("change", (e) => {
   }
 });
 
-// Título normalizado para comparar duplicados: sin espacios sobrantes ni mayúsculas.
-function normTitle(s) {
+// Texto normalizado para comparar duplicados: sin espacios sobrantes ni mayúsculas.
+function normText(s) {
   return (s || "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// Busca una tarea vigente (no completada) con el mismo título en la misma subcategoría.
-function findDuplicateTask(title, subId, ignoreId) {
-  const key = normTitle(title);
-  return S.tasks.find((t) =>
-    t.id !== ignoreId && !t.done && t.subcategory_id === subId && normTitle(t.title) === key
-  );
+// Dos tareas son "la misma" si coinciden subcategoría, título, descripción, fecha y hora.
+// La fecha entra en la clave a propósito: la misma gestión en días distintos son tareas
+// distintas y deben poder convivir.
+function taskKey(t) {
+  return [
+    t.subcategory_id,
+    normText(t.title),
+    normText(t.description),
+    t.due_date || "",
+    (t.due_time || "").slice(0, 5),
+  ].join("|");
+}
+
+// Busca una tarea vigente (no completada) idéntica a la que se está por guardar.
+function findDuplicateTask(patch, ignoreId) {
+  const key = taskKey(patch);
+  return S.tasks.find((t) => t.id !== ignoreId && !t.done && taskKey(t) === key);
 }
 
 // Un solo guardado a la vez: si Supabase tarda, los taps repetidos en "Guardar"
@@ -953,9 +964,6 @@ document.addEventListener("submit", async (e) => {
 
       const targetSub = fd.get("subcat") || form.dataset.sub;
       if (!targetSub) return;
-      if (findDuplicateTask(title, targetSub, form.dataset.id || null)) {
-        return showToast("⚠️ Ya tienes esa tarea en esa subcategoría");
-      }
 
       const patch = {
         title,
@@ -967,6 +975,9 @@ document.addEventListener("submit", async (e) => {
         next_due,
         done: false,
       };
+      if (findDuplicateTask(patch, form.dataset.id || null)) {
+        return showToast("⚠️ Esa tarea ya existe: mismo título, descripción, fecha y hora");
+      }
       if (form.dataset.id) {
         await DB.update("tasks", form.dataset.id, patch);
       } else {

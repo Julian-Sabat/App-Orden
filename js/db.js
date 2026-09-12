@@ -126,6 +126,17 @@ export async function fetchAll() {
   return data;
 }
 
+// El índice único de Postgres es la última defensa contra duplicados (23505):
+// traducirlo a un mensaje entendible en vez de mostrar el error crudo.
+function msgEscritura(error, verbo, table) {
+  if (error.code === "23505") {
+    return table === "tasks"
+      ? "Esa tarea ya existe: mismo título, descripción, fecha y hora."
+      : "Ya existe un registro igual.";
+  }
+  return `No se pudo ${verbo}: ${error.message}`;
+}
+
 export async function insert(table, row) {
   if (!supabase) {
     const db = localDB();
@@ -136,7 +147,7 @@ export async function insert(table, row) {
     return full;
   }
   const { data, error } = await supabase.from(table).insert(row).select().single();
-  if (error) throw new Error("No se pudo guardar: " + error.message);
+  if (error) throw new Error(msgEscritura(error, "guardar", table));
   return data;
 }
 
@@ -149,7 +160,7 @@ export async function update(table, id, patch) {
     return row;
   }
   const { data, error } = await supabase.from(table).update(patch).eq("id", id).select().single();
-  if (error) throw new Error("No se pudo actualizar: " + error.message);
+  if (error) throw new Error(msgEscritura(error, "actualizar", table));
   return data;
 }
 

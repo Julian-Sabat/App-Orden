@@ -583,9 +583,10 @@ function vistaResumen(r) {
     ? abiertas.map((p) => filaPosicion(p, r.valor)).join("")
     : `<div class="empty">Todavía no hay posiciones. Importa el CSV de CoinMarketCap o agrega un movimiento con el +.</div>`;
 
+  // Importar es una acción esporádica: va al final, chica, no compitiendo con las posiciones.
   const acciones = `
     <div class="inv-acciones">
-      <button class="btn-add" data-action="inv-importar">⬆ Importar CSV de CoinMarketCap</button>
+      <button class="btn-small inv-importar" data-action="inv-importar">⬆ Importar CSV de CoinMarketCap</button>
       <input type="file" id="inv-file" accept=".csv,text/csv" multiple hidden />
     </div>`;
 
@@ -601,8 +602,8 @@ function vistaResumen(r) {
          </div>`).join("")}</div>` : ""}`
     : "";
 
-  return chipsGrupo() + patrimonio + pnl + acciones +
-    `<h2 class="section-title">Posiciones (${abiertas.length})</h2>` + lista + cerradasHtml;
+  return chipsGrupo() + patrimonio + pnl +
+    `<h2 class="section-title">Posiciones (${abiertas.length})</h2>` + lista + cerradasHtml + acciones;
 }
 
 function filaPosicion(p, valorTotal) {
@@ -634,6 +635,7 @@ function filaPosicion(p, valorTotal) {
       <div class="inv-pos-id">
         <span class="inv-sym">${esc(p.symbol)}</span>
         <span class="inv-name">${fmtPrice(p.price)}</span>
+        <span class="inv-pos-peso">${peso == null ? "" : `${peso.toFixed(1)}% del portafolio`}</span>
       </div>
       <div class="inv-cambios">
         ${cambio("30d", px.change30d)}${cambio("7d", px.change7d)}${cambio("1d", px.change24h)}
@@ -642,9 +644,6 @@ function filaPosicion(p, valorTotal) {
         <span class="inv-val">${money(p.value)}</span>
         <span class="inv-pnl ${signo(p.unrealized)}">${p.price == null ? "sin precio" : fmtPct(p.unrealizedPct)}</span>
       </div>
-    </div>
-    <div class="inv-pos-peso" data-action="inv-expandir" data-sym="${esc(p.symbol)}">
-      ${peso == null ? "" : `${peso.toFixed(1)}% del portafolio`}
     </div>
     ${detalle}
   </article>`;

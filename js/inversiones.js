@@ -18,13 +18,15 @@ export const INV = {
   transactions: [],
   settings: null,
   tokens: [],
-  prices: {},          // symbol -> { usd, change24h, at }
+  prices: {},          // symbol -> { usd, change24h, change7d, change30d }
   loaded: false,
   loading: false,
   pricesAt: null,
   tab: "resumen",      // resumen | historial
   filterSymbol: "",
+  filterPortfolio: "", // "" = todos los grupos
   expanded: null,      // símbolo con detalle abierto
+  cerradasAbierto: false,   // la sección de cerradas arranca plegada
 };
 
 let ctx = {};          // utilidades que presta app.js: render, showToast, openModal, closeModal
@@ -88,6 +90,12 @@ function fmtPct(v) {
   return (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
 }
 
+// En las tres columnas de cambio no entra "+1266.52%": un decimal alcanza.
+function fmtPctCorto(v) {
+  if (v == null || !isFinite(v)) return "—";
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+}
+
 function fmtFecha(iso) {
   const d = new Date(iso);
   if (isNaN(d)) return "—";
@@ -118,10 +126,34 @@ export async function load(force) {
 
 // ---------- Posiciones ----------
 
+export const SIN_GRUPO = "Sin clasificar";
+
+// Clave de grupo de un movimiento. El import la toma del nombre del archivo.
+export function grupoDe(tx) {
+  return (tx.portfolio || "").trim() || SIN_GRUPO;
+}
+
+// Nombre visible de un grupo: el que el usuario le puso, o la clave tal cual.
+export function labelGrupo(key) {
+  const labels = INV.settings?.portfolio_labels || {};
+  return labels[key] || key;
+}
+
+// Grupos existentes, ordenados por valor de sus posiciones abiertas.
+export function grupos() {
+  const keys = [...new Set(INV.transactions.map(grupoDe))];
+  return keys
+    .map((k) => ({ key: k, label: labelGrupo(k), valor: resumen(k).valor }))
+    .sort((a, b) => b.valor - a.valor);
+}
+
 // Reconstruye la tenencia actual recorriendo las transacciones en orden cronológico.
-export function positions() {
+// Con `pf`, solo las de ese grupo: cada grupo lleva su propia base de costo, igual
+// que en CoinMarketCap, así el promedio de un token no se mezcla entre portafolios.
+export function positions(pf) {
   const bySym = new Map();
-  const orden = [...INV.transactions].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
+  const base = pf ? INV.transactions.filter((t) => grupoDe(t) === pf) : INV.transactions;
+  const orden = [...base].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
 
   for (const t of orden) {
     const sym = t.symbol;
@@ -178,8 +210,8 @@ export function positions() {
   return out;
 }
 
-export function resumen() {
-  const pos = positions();
+export function resumen(pf) {
+  const pos = positions(pf);
   const abiertas = pos.filter((p) => p.abierta && !p.hidden);
   const valor = abiertas.reduce((s, p) => s + (p.value || 0), 0);
   const costo = abiertas.reduce((s, p) => s + p.cost, 0);
@@ -187,7 +219,9 @@ export function resumen() {
   const realized = pos.reduce((s, p) => s + p.realized, 0);
   const unrealized = abiertas.reduce((s, p) => s + p.unrealized, 0);
   const debt = Number(INV.settings?.debt || 0);
-  return { pos, abiertas, valor, costo, realized, unrealized, sinPrecio, debt, neto: valor - debt };
+  // Con un grupo filtrado el neto no tiene sentido: la deuda es global, no del grupo.
+  return { pos, abiertas, valor, costo, realized, unrealized, sinPrecio, debt,
+           neto: valor - debt, filtrado: !!pf };
 }
 
 // ---------- Precios (CoinGecko, desde el dispositivo) ----------
@@ -232,7 +266,7 @@ async function resolverId(symbol) {
 }
 
 export async function refreshPrices(silencioso) {
-  const abiertas = positions().filter((p) => p.abierta && !p.hidden);
+  const abiertas = positions().filter((p) => p.abierta && !p.hidden);   // todos los grupos
   const pend = [];
   for (const p of abiertas) {
     const tk = INV.tokens.find((t) => t.symbol === p.symbol);
@@ -258,24 +292,46 @@ export async function refreshPrices(silencioso) {
     }
   }
 
-  // 2) un solo request con todos los ids
+  // 2) un solo request con todos los ids. /coins/markets en vez de /simple/price
+  // porque este trae los tres cambios (24h, 7d, 30d) sin pedir llamadas extra.
   const ids = [...new Set(pend.filter((x) => x.id).map((x) => x.id))];
   if (!ids.length) { INV.pricesAt = Date.now(); writePriceCache(); return; }
   try {
-    const url = `${CG}/simple/price?ids=${ids.map(encodeURIComponent).join(",")}` +
-                `&vs_currencies=usd&include_24hr_change=true`;
+    const url = `${CG}/coins/markets?vs_currency=usd&per_page=250` +
+                `&ids=${ids.map(encodeURIComponent).join(",")}` +
+                `&price_change_percentage=24h,7d,30d`;
     const r = await fetch(url);
     if (!r.ok) throw new Error(`CoinGecko respondió ${r.status}`);
-    const j = await r.json();
+    const arr = await r.json();
+    const porId = new Map((Array.isArray(arr) ? arr : []).map((c) => [c.id, c]));
     for (const x of pend) {
-      if (!x.id || !j[x.id]) continue;
-      INV.prices[x.sym] = { usd: j[x.id].usd, change24h: j[x.id].usd_24h_change ?? null };
+      const c = x.id ? porId.get(x.id) : null;
+      if (!c) continue;
+      // Al pedir price_change_percentage, los campos llegan con sufijo _in_currency;
+      // el de 24h existe además sin sufijo, y sirve de respaldo.
+      INV.prices[x.sym] = {
+        usd: c.current_price,
+        change24h: c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h ?? null,
+        change7d: c.price_change_percentage_7d_in_currency ?? null,
+        change30d: c.price_change_percentage_30d_in_currency ?? null,
+      };
     }
     INV.pricesAt = Date.now();
     writePriceCache();
   } catch (e) {
     if (!silencioso) ctx.showToast("⚠️ No se pudieron traer precios: " + e.message);
   }
+}
+
+// inv_settings tiene una fila por usuario, que puede no existir todavía.
+async function guardarSettings(patch) {
+  if (INV.settings) {
+    const row = await DB.update("inv_settings", INV.settings.id, { ...patch, updated_at: new Date().toISOString() });
+    INV.settings = row || { ...INV.settings, ...patch };
+  } else {
+    INV.settings = await DB.insert("inv_settings", patch);
+  }
+  return INV.settings;
 }
 
 async function guardarToken(symbol, patch) {
@@ -433,7 +489,7 @@ export async function importarArchivos(fileList) {
 
 export function renderInversiones() {
   if (!INV.loaded) return `<div class="loading">Cargando inversiones…</div>`;
-  const r = resumen();
+  const r = resumen(INV.filterPortfolio);
   const priv = privacyOn();
 
   const ojo = priv
@@ -460,6 +516,23 @@ export function renderInversiones() {
   return head + `<main class="content inv">` + tabs + cuerpo + `</main>`;
 }
 
+// Chips de grupo. Con un solo grupo igual se muestra, para poder renombrarlo.
+function chipsGrupo() {
+  const gs = grupos();
+  if (!gs.length) return "";
+  const activo = INV.filterPortfolio;
+  const todos = gs.length > 1
+    ? `<button class="fchip ${!activo ? "active" : ""}" data-action="inv-grupo" data-pf="">Todos</button>`
+    : "";
+  const chips = gs.map((g) =>
+    `<button class="fchip ${activo === g.key ? "active" : ""}" data-action="inv-grupo" data-pf="${esc(g.key)}">${esc(g.label)}</button>`
+  ).join("");
+  const renombrar = activo
+    ? `<button class="fchip fchip-accion" data-action="inv-renombrar" data-pf="${esc(activo)}" title="Renombrar grupo">✎</button>`
+    : "";
+  return `<div class="fchips fchips-grupo">${todos}${chips}${renombrar}</div>`;
+}
+
 function signo(v) {
   return v == null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "";
 }
@@ -469,7 +542,22 @@ function vistaResumen(r) {
     ? `Precios de ${new Date(INV.pricesAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}`
     : "Sin precios todavía — toca ↻ arriba";
 
-  const patrimonio = `
+  // Con un grupo filtrado el encabezado es el valor de ese grupo: la deuda es global
+  // y restarla de un solo grupo daría un "neto" que no significa nada.
+  const total = resumen().valor;
+  const peso = total > 0 ? (r.valor / total) * 100 : null;
+  const patrimonio = r.filtrado
+    ? `
+    <section class="inv-hero">
+      <div class="inv-hero-label">${esc(labelGrupo(INV.filterPortfolio))}</div>
+      <div class="inv-hero-value">${money(r.valor)}</div>
+      <div class="inv-hero-sub">${esc(frescura)}${r.sinPrecio ? ` · ${r.sinPrecio} sin precio` : ""}</div>
+      <div class="inv-hero-grid">
+        <div><span>Peso en el total</span><strong>${peso == null ? "—" : peso.toFixed(1) + "%"}</strong></div>
+        <div><span>Portafolio completo</span><strong>${money(total)}</strong></div>
+      </div>
+    </section>`
+    : `
     <section class="inv-hero">
       <div class="inv-hero-label">Patrimonio neto</div>
       <div class="inv-hero-value ${signo(r.neto)}">${money(r.neto)}</div>
@@ -502,26 +590,28 @@ function vistaResumen(r) {
     </div>`;
 
   const cerradasHtml = cerradas.length
-    ? `<h2 class="section-title">Cerradas (${cerradas.length})</h2>
-       <div class="inv-cerradas">${cerradas.map((p) => `
+    ? `<button class="inv-cerradas-head" data-action="inv-toggle-cerradas" aria-expanded="${INV.cerradasAbierto}">
+         <span class="section-title">Cerradas (${cerradas.length})</span>
+         <span class="inv-chevron ${INV.cerradasAbierto ? "abierto" : ""}">›</span>
+       </button>
+       ${INV.cerradasAbierto ? `<div class="inv-cerradas">${cerradas.map((p) => `
          <div class="inv-cerrada">
            <span class="inv-sym">${esc(p.symbol)}</span>
            <span class="${signo(p.realized)}">${money(p.realized)}</span>
-         </div>`).join("")}</div>`
+         </div>`).join("")}</div>` : ""}`
     : "";
 
-  return patrimonio + pnl + acciones +
+  return chipsGrupo() + patrimonio + pnl + acciones +
     `<h2 class="section-title">Posiciones (${abiertas.length})</h2>` + lista + cerradasHtml;
 }
 
 function filaPosicion(p, valorTotal) {
   const peso = valorTotal > 0 && p.value != null ? (p.value / valorTotal) * 100 : null;
-  const ch = INV.prices[p.symbol]?.change24h;
   const abierto = INV.expanded === p.symbol;
   const detalle = abierto ? `
     <div class="inv-detalle">
       <div><span>Cantidad</span><b>${fmtQty(p.qty)}</b></div>
-      <div><span>Precio</span><b>${fmtPrice(p.price)}</b></div>
+      <div><span>Nombre</span><b class="inv-detalle-nombre">${esc(p.name || "—")}</b></div>
       <div><span>Costo prom.</span><b>${privacyOn() ? "••••" : fmtPrice(p.avgCost)}</b></div>
       <div><span>Costo total</span><b>${money(p.cost)}</b></div>
       <div><span>No realizado</span><b class="${signo(p.unrealized)}">${money(p.unrealized)} (${fmtPct(p.unrealizedPct)})</b></div>
@@ -534,17 +624,27 @@ function filaPosicion(p, valorTotal) {
       </div>
     </div>` : "";
 
+  // Cambios del PRECIO del token (no de la posición): lo que hizo el mercado.
+  const px = INV.prices[p.symbol] || {};
+  const cambio = (label, v) =>
+    `<div><span>${label}</span><b class="${signo(v)}">${v == null ? "—" : fmtPctCorto(v)}</b></div>`;
+
   return `<article class="card inv-pos ${abierto ? "expanded" : ""}">
     <div class="inv-pos-main" data-action="inv-expandir" data-sym="${esc(p.symbol)}">
       <div class="inv-pos-id">
         <span class="inv-sym">${esc(p.symbol)}</span>
-        <span class="inv-name">${esc(p.name && p.name.toUpperCase() !== p.symbol ? p.name : "")}</span>
+        <span class="inv-name">${fmtPrice(p.price)}</span>
+      </div>
+      <div class="inv-cambios">
+        ${cambio("30d", px.change30d)}${cambio("7d", px.change7d)}${cambio("1d", px.change24h)}
       </div>
       <div class="inv-pos-num">
         <span class="inv-val">${money(p.value)}</span>
-        <span class="inv-sub ${signo(p.unrealized)}">${p.price == null ? "sin precio" : `${fmtPct(p.unrealizedPct)}${peso != null ? ` · ${peso.toFixed(1)}%` : ""}`}</span>
+        <span class="inv-pnl ${signo(p.unrealized)}">${p.price == null ? "sin precio" : fmtPct(p.unrealizedPct)}</span>
       </div>
-      <div class="inv-pos-24h ${signo(ch)}">${ch == null ? "" : fmtPct(ch)}</div>
+    </div>
+    <div class="inv-pos-peso" data-action="inv-expandir" data-sym="${esc(p.symbol)}">
+      ${peso == null ? "" : `${peso.toFixed(1)}% del portafolio`}
     </div>
     ${detalle}
   </article>`;
@@ -552,15 +652,17 @@ function filaPosicion(p, valorTotal) {
 
 function vistaHistorial(r) {
   let tx = [...INV.transactions].sort((a, b) => (a.ts < b.ts ? 1 : -1));
+  if (INV.filterPortfolio) tx = tx.filter((t) => grupoDe(t) === INV.filterPortfolio);
+  const enGrupo = tx;
   if (INV.filterSymbol) tx = tx.filter((t) => t.symbol === INV.filterSymbol);
 
-  const symbols = [...new Set(INV.transactions.map((t) => t.symbol))].sort();
+  const symbols = [...new Set(enGrupo.map((t) => t.symbol))].sort();
   const chips = `<div class="fchips">
     <button class="fchip ${!INV.filterSymbol ? "active" : ""}" data-action="inv-filtro" data-sym="">Todos</button>
     ${symbols.map((s) => `<button class="fchip ${INV.filterSymbol === s ? "active" : ""}" data-action="inv-filtro" data-sym="${esc(s)}">${esc(s)}</button>`).join("")}
   </div>`;
 
-  if (!tx.length) return chips + `<div class="empty">Sin movimientos.</div>`;
+  if (!tx.length) return chipsGrupo() + chips + `<div class="empty">Sin movimientos.</div>`;
 
   const filas = tx.map((t) => {
     const total = t.total_value == null ? null : Number(t.total_value);
@@ -583,7 +685,7 @@ function vistaHistorial(r) {
     </article>`;
   }).join("");
 
-  return chips + `<div class="inv-tx-list">${filas}</div>`;
+  return chipsGrupo() + chips + `<div class="inv-tx-list">${filas}</div>`;
 }
 
 // ---------- Modales ----------
@@ -645,6 +747,23 @@ function modalTrade() {
     </form>`;
 }
 
+function modalRenombrar(pf) {
+  const actual = labelGrupo(pf);
+  const renombrado = actual !== pf;
+  return `<h2>Renombrar grupo</h2>
+    <form data-form="inv-renombrar" data-pf="${esc(pf)}">
+      <label>Nombre visible
+        <input type="text" name="label" value="${esc(actual)}" required maxlength="40" /></label>
+      <p class="hint">Internamente el grupo sigue llamándose <b>${esc(pf)}</b>, que es como viene del
+        archivo de CoinMarketCap. Por eso volver a importar ese export no crea un grupo duplicado.</p>
+      <div class="modal-actions">
+        ${renombrado ? `<button type="button" class="btn-small" data-action="inv-restaurar-nombre" data-pf="${esc(pf)}">Volver al original</button>` : ""}
+        <button type="button" class="btn-small" data-action="close-modal">Cancelar</button>
+        <button type="submit" class="btn-primary">Guardar</button>
+      </div>
+    </form>`;
+}
+
 function modalToken(sym) {
   const tk = INV.tokens.find((t) => t.symbol === sym) || {};
   return `<h2>${esc(sym)}</h2>
@@ -671,6 +790,32 @@ export async function handleAction(a, el) {
   if (a === "inv-tab") { INV.tab = el.dataset.tab; INV.expanded = null; ctx.render(); return true; }
 
   if (a === "inv-filtro") { INV.filterSymbol = el.dataset.sym || ""; ctx.render(); return true; }
+
+  if (a === "inv-grupo") {
+    INV.filterPortfolio = el.dataset.pf || "";
+    INV.filterSymbol = "";       // el token filtrado puede no existir en el grupo nuevo
+    INV.expanded = null;
+    ctx.render();
+    return true;
+  }
+
+  if (a === "inv-renombrar") { ctx.openModal(modalRenombrar(el.dataset.pf)); return true; }
+
+  if (a === "inv-toggle-cerradas") {
+    INV.cerradasAbierto = !INV.cerradasAbierto;
+    ctx.render();
+    return true;
+  }
+
+  if (a === "inv-restaurar-nombre") {
+    const pf = el.dataset.pf;
+    const labels = { ...(INV.settings?.portfolio_labels || {}) };
+    delete labels[pf];
+    await guardarSettings({ portfolio_labels: labels });
+    ctx.closeModal();
+    ctx.render();
+    return true;
+  }
 
   if (a === "inv-expandir") {
     INV.expanded = INV.expanded === el.dataset.sym ? null : el.dataset.sym;
@@ -745,13 +890,7 @@ export async function handleSubmit(kind, fd, form) {
   if (kind === "inv-deuda") {
     const debt = Number(fd.get("debt") || 0);
     const debt_note = (fd.get("debt_note") || "").trim() || null;
-    const patch = { debt, debt_note, updated_at: new Date().toISOString() };
-    if (INV.settings) {
-      const row = await DB.update("inv_settings", INV.settings.id, patch);
-      INV.settings = row || { ...INV.settings, ...patch };
-    } else {
-      INV.settings = await DB.insert("inv_settings", patch);
-    }
+    await guardarSettings({ debt, debt_note });
     ctx.closeModal();
     ctx.render();
     return true;
@@ -786,6 +925,18 @@ export async function handleSubmit(kind, fd, form) {
     INV.transactions.push(ins);
     ctx.closeModal();
     await refreshPrices(true);
+    ctx.render();
+    return true;
+  }
+
+  if (kind === "inv-renombrar") {
+    const pf = form.dataset.pf;
+    const label = (fd.get("label") || "").trim();
+    if (!label) { ctx.showToast("⚠️ Ponle un nombre"); return true; }
+    const labels = { ...(INV.settings?.portfolio_labels || {}) };
+    if (label === pf) delete labels[pf]; else labels[pf] = label;
+    await guardarSettings({ portfolio_labels: labels });
+    ctx.closeModal();
     ctx.render();
     return true;
   }

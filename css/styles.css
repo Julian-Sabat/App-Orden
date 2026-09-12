@@ -779,24 +779,23 @@ button { font-family: inherit; }
 .inv-pnl span { font-size: 10.5px; color: var(--muted); font-weight: 600; }
 .inv-pnl strong { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
 
-.inv-acciones { margin-bottom: 6px; }
 
 /* .card es flex: sin este display, el bloque de detalle se acomoda como columna
    hermana de la fila en vez de desplegarse debajo. */
 .inv-pos { display: block; padding: 0; overflow: hidden; }
 .inv-pos-main {
-  display: flex; align-items: center; gap: 8px; padding: 13px 15px 9px; cursor: pointer;
+  display: flex; align-items: center; gap: 10px; padding: 14px 16px; cursor: pointer;
 }
-.inv-pos-id { flex-shrink: 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.inv-sym { font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; }
+.inv-pos-id { flex-shrink: 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.inv-sym { font-size: 16.5px; font-weight: 750; letter-spacing: -0.015em; }
 .inv-name {
-  font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 .inv-pos-num { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
-.inv-val { font-size: 15px; font-weight: 700; letter-spacing: -0.015em; }
+.inv-val { font-size: 19px; font-weight: 750; letter-spacing: -0.02em; }
 .inv-sub { font-size: 11.5px; color: var(--muted); }
-.inv-pnl { font-size: 12px; font-weight: 650; }
+.inv-pnl { font-size: 14px; font-weight: 700; }
 
 /* Cambios del precio del token: 30d / 7d / 1d, al medio de la fila */
 .inv-cambios {
@@ -805,14 +804,17 @@ button { font-family: inherit; }
 .inv-cambios > div {
   display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0;
 }
-.inv-cambios span { font-size: 9.5px; color: var(--muted); font-weight: 600; letter-spacing: 0.02em; }
-.inv-cambios b { font-size: 11.5px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.inv-cambios span { font-size: 10.5px; color: var(--muted); font-weight: 600; letter-spacing: 0.02em; }
+.inv-cambios b { font-size: 13.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 .inv-pos-peso {
-  padding: 0 15px 11px; font-size: 11px; color: var(--muted); cursor: pointer;
-  font-variant-numeric: tabular-nums;
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .inv-pos-peso:empty { display: none; }
+
+/* Importar es esporádico: botón discreto al final de la vista */
+.inv-acciones { margin-top: 18px; display: flex; }
+.inv-importar { margin: 0 auto; }
 
 /* Cerradas: encabezado plegable, arranca cerrado */
 .inv-cerradas-head {
@@ -870,4 +872,35 @@ button { font-family: inherit; }
 @media (min-width: 760px) {
   .inv-detalle { grid-template-columns: repeat(4, 1fr); }
   .inv-hero-value { font-size: 40px; }
+}
+
+/* En >=900px .content crece a 1200px para la grilla de tareas. Inversiones es una
+   lista de filas: estirada a ese ancho queda toda aire y los números se pierden. */
+@media (min-width: 900px) {
+  .content.inv { max-width: 760px; }
+  .inv-sym { font-size: 18px; }
+  .inv-val { font-size: 21px; }
+  .inv-cambios b { font-size: 14.5px; }
+  .inv-cambios { gap: 16px; }
+}
+
+/* En un teléfono no entran tres columnas de cambios entre el token y el monto:
+   los números terminan tocándose. Por debajo de 620px pasan a una línea propia,
+   con la etiqueta al lado del valor en vez de encima. */
+@media (max-width: 619px) {
+  .inv-pos-main { flex-wrap: wrap; padding: 13px 14px 12px; gap: 8px; }
+  .inv-pos-id { flex: 1; }
+  .inv-cambios {
+    order: 3; flex-basis: 100%; justify-content: flex-start; gap: 16px;
+    padding-top: 10px; border-top: 1px solid var(--line);
+  }
+  .inv-cambios > div { flex-direction: row; align-items: baseline; gap: 5px; }
+  .inv-cambios span { font-size: 11px; }
+  .inv-cambios b { font-size: 13.5px; }
+}
+
+@media (max-width: 359px) {
+  .inv-cambios { gap: 11px; }
+  .inv-val { font-size: 17.5px; }
+  .inv-sym { font-size: 15.5px; }
 }

@@ -1,4 +1,5 @@
 import * as DB from "./db.js";
+import * as Inv from "./inversiones.js";
 import {
   todayStr, parseDate, nextOccurrence, advancePastToday, firstDayOfMonthOccurrence, firstFechasOccurrence, describeRecurrence,
 } from "./recurrence.js";
@@ -141,6 +142,7 @@ function route() {
   if (parts[0] === "proximas") return { view: "proximas" };
   if (parts[0] === "todas") return { view: "todas" };
   if (parts[0] === "historial") return { view: "historial" };
+  if (parts[0] === "inversiones") return { view: "inversiones" };
   return { view: "home" };
 }
 
@@ -162,12 +164,32 @@ function render() {
   else if (r.view === "proximas") html = renderProximas();
   else if (r.view === "todas") html = renderTodas();
   else if (r.view === "historial") html = renderHistorial();
+  else if (r.view === "inversiones") html = renderInversiones();
   app.innerHTML = html + renderFab(r) + renderNav(r.view);
 }
 
-// FAB de nueva tarea, visible en todas las vistas; en una subcategoría crea directo ahí
+// Inversiones trae sus datos aparte y solo al entrar: pedirlos en cada refresh de
+// tareas sería tráfico de más para una sección que casi nunca está en pantalla.
+function renderInversiones() {
+  const I = Inv.INV;
+  if (!I.loaded && !I.loading) {
+    Inv.load().then(async () => {
+      if (route().view !== "inversiones") return;
+      render();
+      if (!Inv.preciosFrescos()) {
+        await Inv.refreshPrices(true);
+        if (route().view === "inversiones") render();
+      }
+    });
+  }
+  return Inv.renderInversiones();
+}
+
+// FAB: nueva tarea en las vistas de tareas, nuevo movimiento en Inversiones
 function renderFab(r) {
-  const attrs = r.view === "sub"
+  const attrs = r.view === "inversiones"
+    ? `data-action="inv-trade"`
+    : r.view === "sub"
     ? `data-action="new-task" data-sub="${r.id}"`
     : `data-action="new-task-any"`;
   return `<button class="fab" ${attrs} aria-label="Nueva tarea">
@@ -191,6 +213,7 @@ function renderNav(active) {
     proximas: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
     todas: svg('<path d="M8.5 6h12M8.5 12h12M8.5 18h12M4 6h.01M4 12h.01M4 18h.01"/>'),
     historial: svg('<circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.2l2.4 2.4 4.6-5"/>'),
+    inversiones: svg('<path d="M4 19.5V8M9.5 19.5V4M15 19.5v-8M20.5 19.5V10"/>'),
   };
   const item = (href, view, label) =>
     `<a href="${href}" class="nav-item ${active === view ? "active" : ""}">
@@ -201,6 +224,7 @@ function renderNav(active) {
     ${item("#/proximas", "proximas", "Próximas")}
     ${item("#/todas", "todas", "Todas")}
     ${item("#/historial", "historial", "Historial")}
+    ${item("#/inversiones", "inversiones", "Inversiones")}
   </nav>`;
 }
 
@@ -711,6 +735,16 @@ document.addEventListener("click", async (e) => {
   const a = el.dataset.action;
   const id = el.dataset.id;
 
+  // La sección Inversiones maneja sus propias acciones (prefijo inv-)
+  if (a.startsWith("inv-")) {
+    try {
+      if (await Inv.handleAction(a, el)) return;
+    } catch (err) {
+      showToast("⚠️ " + err.message);
+      return;
+    }
+  }
+
   if (a === "close-modal") return closeModal();
   if (a === "toggle-theme") {
     localStorage.setItem(THEME_KEY, THEME_CYCLE[themePref()]);
@@ -872,6 +906,11 @@ document.addEventListener("submit", async (e) => {
   if (btn) { btn.disabled = true; btn.textContent = "Guardando…"; }
 
   try {
+    if (kind.startsWith("inv-")) {
+      await Inv.handleSubmit(kind, fd, form);
+      return;
+    }
+
     if (kind === "login") {
       const btn = form.querySelector("button[type=submit]");
       btn.disabled = true; btn.textContent = "Entrando…";
@@ -1018,6 +1057,7 @@ document.addEventListener("visibilitychange", () => {
 // ---------- Arranque ----------
 async function main() {
   applyTheme();
+  Inv.init({ render, showToast, openModal, closeModal });
   render(); // "Cargando…"
   try {
     await DB.init((s) => { S.session = s; if (!s) render(); });

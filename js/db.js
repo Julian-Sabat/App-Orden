@@ -3,7 +3,8 @@
 
 const LOCAL_KEY = "orden_local_db";
 const CACHE_KEY = "orden_cache";
-const TABLES = ["categories", "subcategories", "tasks", "completions"];
+const TABLES = ["categories", "subcategories", "tasks", "completions",
+                "inv_transactions", "inv_settings", "inv_tokens"];
 
 let supabase = null;
 let session = null;
@@ -57,13 +58,16 @@ function traducirError(msg) {
 // ---------- Modo local ----------
 
 function localDB() {
+  let db = null;
   try {
     const raw = localStorage.getItem(LOCAL_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) db = JSON.parse(raw);
   } catch (e) { /* corrupto: partir de cero */ }
-  const empty = {};
-  TABLES.forEach((t) => (empty[t] = []));
-  return empty;
+  if (!db) db = {};
+  // Una base local guardada antes de Inversiones no tiene esas tablas: sin este
+  // relleno, insert() haría push sobre undefined.
+  TABLES.forEach((t) => { if (!Array.isArray(db[t])) db[t] = []; });
+  return db;
 }
 
 function saveLocal(db) {
@@ -178,6 +182,28 @@ export async function remove(table, id) {
   }
   const { error } = await supabase.from(table).delete().eq("id", id);
   if (error) throw new Error("No se pudo eliminar: " + error.message);
+}
+
+// Tablas de Inversiones: se cargan aparte porque solo las necesita esa sección
+// (fetchAll corre en cada refresh de tareas y no tiene por qué traerlas).
+export async function fetchInv() {
+  if (!supabase) {
+    const db = localDB();
+    return {
+      inv_transactions: db.inv_transactions,
+      inv_settings: db.inv_settings,
+      inv_tokens: db.inv_tokens,
+    };
+  }
+  const [tx, st, tk] = await Promise.all([
+    supabase.from("inv_transactions").select("*").order("ts", { ascending: false }).limit(5000),
+    supabase.from("inv_settings").select("*").limit(1),
+    supabase.from("inv_tokens").select("*"),
+  ]);
+  for (const r of [tx, st, tk]) {
+    if (r.error) throw new Error("Error cargando inversiones: " + r.error.message);
+  }
+  return { inv_transactions: tx.data, inv_settings: st.data, inv_tokens: tk.data };
 }
 
 // Migración: si hay datos del modo local y la cuenta remota está vacía, los sube.

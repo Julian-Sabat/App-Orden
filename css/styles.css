@@ -735,3 +735,104 @@ button { font-family: inherit; }
   font-size: 14px;
   cursor: pointer;
 }
+
+/* ---------- Inversiones ---------- */
+.inv { --pos: var(--c1); --neg: var(--danger); }
+.inv .pos { color: var(--pos); }
+.inv .neg { color: var(--neg); }
+.inv .inv-val, .inv .inv-hero-value, .inv strong, .inv b, .inv .inv-sub, .inv .inv-pos-24h {
+  font-variant-numeric: tabular-nums;
+}
+
+.inv-tabs { margin-bottom: 14px; }
+
+.inv-hero {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px 18px 14px;
+  margin-bottom: 12px;
+}
+.inv-hero-label { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+.inv-hero-value { font-size: 34px; font-weight: 800; letter-spacing: -0.03em; margin-top: 4px; line-height: 1.1; }
+.inv-hero-sub { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.inv-hero-grid {
+  display: flex; gap: 10px; margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--line);
+}
+.inv-hero-grid > div { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.inv-hero-grid span { font-size: 11px; color: var(--muted); font-weight: 600; }
+.inv-hero-grid strong { font-size: 17px; font-weight: 700; letter-spacing: -0.015em; }
+.inv-debt-btn { margin-top: 5px; align-self: flex-start; }
+
+.inv-pnl {
+  display: flex; gap: 8px; margin-bottom: 14px;
+}
+.inv-pnl > div {
+  flex: 1; min-width: 0; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 11px; display: flex; flex-direction: column; gap: 2px;
+}
+.inv-pnl span { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+.inv-pnl strong { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+
+.inv-acciones { margin-bottom: 6px; }
+
+/* .card es flex: sin este display, el bloque de detalle se acomoda como columna
+   hermana de la fila en vez de desplegarse debajo. */
+.inv-pos { display: block; padding: 0; overflow: hidden; }
+.inv-pos-main {
+  display: flex; align-items: center; gap: 10px; padding: 13px 15px; cursor: pointer;
+}
+.inv-pos-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.inv-sym { font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; }
+.inv-name {
+  font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.inv-pos-num { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.inv-val { font-size: 15px; font-weight: 700; letter-spacing: -0.015em; }
+.inv-sub { font-size: 11.5px; color: var(--muted); }
+.inv-pos-24h { font-size: 12px; font-weight: 650; min-width: 58px; text-align: right; }
+
+.inv-detalle {
+  border-top: 1px solid var(--line); background: var(--surface-2);
+  padding: 12px 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px;
+}
+.inv-detalle > div { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.inv-detalle span { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+.inv-detalle b { font-size: 13px; font-weight: 650; }
+.inv-detalle-acciones { grid-column: 1 / -1; flex-direction: row !important; gap: 8px; margin-top: 2px; }
+
+.inv-cerradas { display: flex; flex-wrap: wrap; gap: 7px; }
+.inv-cerrada {
+  display: flex; align-items: center; gap: 7px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 10px; padding: 6px 11px; font-size: 12px;
+}
+.inv-cerrada .inv-sym { font-size: 12px; }
+
+.inv-tx { display: block; padding: 11px 14px; }
+.inv-tx-main { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.inv-tx-top { display: flex; align-items: center; gap: 7px; }
+.inv-tx-sub { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.inv-tx-num { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 650; }
+.inv-tipo {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  padding: 2px 7px; border-radius: 6px; background: var(--line); color: var(--muted);
+}
+.inv-tipo.buy { background: color-mix(in srgb, var(--c1) 16%, transparent); color: var(--c1); }
+.inv-tipo.sell { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.inv-origen {
+  font-size: 9.5px; font-weight: 700; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 5px; padding: 1px 5px;
+}
+.inv-tx-list { display: flex; flex-direction: column; gap: 8px; }
+
+.inv-quick { display: flex; gap: 7px; flex-wrap: wrap; }
+.inv-quick .btn-small { flex: 1; min-width: 62px; }
+
+/* Cinco ítems en la barra inferior: "Inversiones" es la etiqueta más larga */
+.bottomnav .nav-item { font-size: 10.5px; letter-spacing: -0.01em; white-space: nowrap; }
+
+@media (min-width: 760px) {
+  .inv-detalle { grid-template-columns: repeat(4, 1fr); }
+  .inv-hero-value { font-size: 40px; }
+}

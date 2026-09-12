@@ -18,7 +18,7 @@ export const INV = {
   transactions: [],
   settings: null,
   tokens: [],
-  prices: {},          // symbol -> { usd, change24h, at }
+  prices: {},          // symbol -> { usd, change24h, change7d, change30d }
   loaded: false,
   loading: false,
   pricesAt: null,
@@ -26,6 +26,7 @@ export const INV = {
   filterSymbol: "",
   filterPortfolio: "", // "" = todos los grupos
   expanded: null,      // símbolo con detalle abierto
+  cerradasAbierto: false,   // la sección de cerradas arranca plegada
 };
 
 let ctx = {};          // utilidades que presta app.js: render, showToast, openModal, closeModal
@@ -87,6 +88,12 @@ function fmtQty(v) {
 function fmtPct(v) {
   if (v == null || !isFinite(v)) return "—";
   return (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
+}
+
+// En las tres columnas de cambio no entra "+1266.52%": un decimal alcanza.
+function fmtPctCorto(v) {
+  if (v == null || !isFinite(v)) return "—";
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
 }
 
 function fmtFecha(iso) {
@@ -285,18 +292,29 @@ export async function refreshPrices(silencioso) {
     }
   }
 
-  // 2) un solo request con todos los ids
+  // 2) un solo request con todos los ids. /coins/markets en vez de /simple/price
+  // porque este trae los tres cambios (24h, 7d, 30d) sin pedir llamadas extra.
   const ids = [...new Set(pend.filter((x) => x.id).map((x) => x.id))];
   if (!ids.length) { INV.pricesAt = Date.now(); writePriceCache(); return; }
   try {
-    const url = `${CG}/simple/price?ids=${ids.map(encodeURIComponent).join(",")}` +
-                `&vs_currencies=usd&include_24hr_change=true`;
+    const url = `${CG}/coins/markets?vs_currency=usd&per_page=250` +
+                `&ids=${ids.map(encodeURIComponent).join(",")}` +
+                `&price_change_percentage=24h,7d,30d`;
     const r = await fetch(url);
     if (!r.ok) throw new Error(`CoinGecko respondió ${r.status}`);
-    const j = await r.json();
+    const arr = await r.json();
+    const porId = new Map((Array.isArray(arr) ? arr : []).map((c) => [c.id, c]));
     for (const x of pend) {
-      if (!x.id || !j[x.id]) continue;
-      INV.prices[x.sym] = { usd: j[x.id].usd, change24h: j[x.id].usd_24h_change ?? null };
+      const c = x.id ? porId.get(x.id) : null;
+      if (!c) continue;
+      // Al pedir price_change_percentage, los campos llegan con sufijo _in_currency;
+      // el de 24h existe además sin sufijo, y sirve de respaldo.
+      INV.prices[x.sym] = {
+        usd: c.current_price,
+        change24h: c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h ?? null,
+        change7d: c.price_change_percentage_7d_in_currency ?? null,
+        change30d: c.price_change_percentage_30d_in_currency ?? null,
+      };
     }
     INV.pricesAt = Date.now();
     writePriceCache();
@@ -572,12 +590,15 @@ function vistaResumen(r) {
     </div>`;
 
   const cerradasHtml = cerradas.length
-    ? `<h2 class="section-title">Cerradas (${cerradas.length})</h2>
-       <div class="inv-cerradas">${cerradas.map((p) => `
+    ? `<button class="inv-cerradas-head" data-action="inv-toggle-cerradas" aria-expanded="${INV.cerradasAbierto}">
+         <span class="section-title">Cerradas (${cerradas.length})</span>
+         <span class="inv-chevron ${INV.cerradasAbierto ? "abierto" : ""}">›</span>
+       </button>
+       ${INV.cerradasAbierto ? `<div class="inv-cerradas">${cerradas.map((p) => `
          <div class="inv-cerrada">
            <span class="inv-sym">${esc(p.symbol)}</span>
            <span class="${signo(p.realized)}">${money(p.realized)}</span>
-         </div>`).join("")}</div>`
+         </div>`).join("")}</div>` : ""}`
     : "";
 
   return chipsGrupo() + patrimonio + pnl + acciones +
@@ -586,7 +607,6 @@ function vistaResumen(r) {
 
 function filaPosicion(p, valorTotal) {
   const peso = valorTotal > 0 && p.value != null ? (p.value / valorTotal) * 100 : null;
-  const ch = INV.prices[p.symbol]?.change24h;
   const abierto = INV.expanded === p.symbol;
   const detalle = abierto ? `
     <div class="inv-detalle">
@@ -604,17 +624,27 @@ function filaPosicion(p, valorTotal) {
       </div>
     </div>` : "";
 
+  // Cambios del PRECIO del token (no de la posición): lo que hizo el mercado.
+  const px = INV.prices[p.symbol] || {};
+  const cambio = (label, v) =>
+    `<div><span>${label}</span><b class="${signo(v)}">${v == null ? "—" : fmtPctCorto(v)}</b></div>`;
+
   return `<article class="card inv-pos ${abierto ? "expanded" : ""}">
     <div class="inv-pos-main" data-action="inv-expandir" data-sym="${esc(p.symbol)}">
       <div class="inv-pos-id">
         <span class="inv-sym">${esc(p.symbol)}</span>
         <span class="inv-name">${fmtPrice(p.price)}</span>
       </div>
+      <div class="inv-cambios">
+        ${cambio("30d", px.change30d)}${cambio("7d", px.change7d)}${cambio("1d", px.change24h)}
+      </div>
       <div class="inv-pos-num">
         <span class="inv-val">${money(p.value)}</span>
-        <span class="inv-sub ${signo(p.unrealized)}">${p.price == null ? "sin precio" : `${fmtPct(p.unrealizedPct)}${peso != null ? ` · ${peso.toFixed(1)}%` : ""}`}</span>
+        <span class="inv-pnl ${signo(p.unrealized)}">${p.price == null ? "sin precio" : fmtPct(p.unrealizedPct)}</span>
       </div>
-      <div class="inv-pos-24h ${signo(ch)}">${ch == null ? "" : fmtPct(ch)}</div>
+    </div>
+    <div class="inv-pos-peso" data-action="inv-expandir" data-sym="${esc(p.symbol)}">
+      ${peso == null ? "" : `${peso.toFixed(1)}% del portafolio`}
     </div>
     ${detalle}
   </article>`;
@@ -770,6 +800,12 @@ export async function handleAction(a, el) {
   }
 
   if (a === "inv-renombrar") { ctx.openModal(modalRenombrar(el.dataset.pf)); return true; }
+
+  if (a === "inv-toggle-cerradas") {
+    INV.cerradasAbierto = !INV.cerradasAbierto;
+    ctx.render();
+    return true;
+  }
 
   if (a === "inv-restaurar-nombre") {
     const pf = el.dataset.pf;

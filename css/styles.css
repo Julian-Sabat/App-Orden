@@ -785,18 +785,47 @@ button { font-family: inherit; }
    hermana de la fila en vez de desplegarse debajo. */
 .inv-pos { display: block; padding: 0; overflow: hidden; }
 .inv-pos-main {
-  display: flex; align-items: center; gap: 10px; padding: 13px 15px; cursor: pointer;
+  display: flex; align-items: center; gap: 8px; padding: 13px 15px 9px; cursor: pointer;
 }
-.inv-pos-id { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.inv-pos-id { flex-shrink: 0; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .inv-sym { font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; }
 .inv-name {
   font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.inv-pos-num { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.inv-pos-num { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
 .inv-val { font-size: 15px; font-weight: 700; letter-spacing: -0.015em; }
 .inv-sub { font-size: 11.5px; color: var(--muted); }
-.inv-pos-24h { font-size: 12px; font-weight: 650; min-width: 58px; text-align: right; }
+.inv-pnl { font-size: 12px; font-weight: 650; }
+
+/* Cambios del precio del token: 30d / 7d / 1d, al medio de la fila */
+.inv-cambios {
+  flex: 1; display: flex; justify-content: center; gap: 9px; min-width: 0;
+}
+.inv-cambios > div {
+  display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0;
+}
+.inv-cambios span { font-size: 9.5px; color: var(--muted); font-weight: 600; letter-spacing: 0.02em; }
+.inv-cambios b { font-size: 11.5px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.inv-pos-peso {
+  padding: 0 15px 11px; font-size: 11px; color: var(--muted); cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.inv-pos-peso:empty { display: none; }
+
+/* Cerradas: encabezado plegable, arranca cerrado */
+.inv-cerradas-head {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  background: none; border: 0; padding: 0; margin: 0 0 4px; cursor: pointer; color: inherit;
+  font: inherit; text-align: left;
+}
+.inv-cerradas-head .section-title { margin: 0; }
+.inv-chevron {
+  color: var(--muted); font-size: 21px; font-weight: 300; line-height: 1;
+  transition: transform 0.15s; transform: rotate(90deg);
+}
+.inv-chevron.abierto { transform: rotate(-90deg); }
 
 .inv-detalle {
   border-top: 1px solid var(--line); background: var(--surface-2);

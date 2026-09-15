@@ -766,13 +766,13 @@ function filaBot(b) {
     <div class="inv-detalle">
       <div><span>Inversión</span><b>${money(b.inversion)}</b></div>
       <div><span>Retirado</span><b>${money(b.retirado)}</b></div>
-      ${celda(b.tipo === "futures" ? "Profit de grilla (reduce)" : "Profit de grilla", b.profitGrilla)}
+      ${celda("Profit de grilla", b.profitGrilla)}
       <div><span>Precio actual</span><b>${fmtPrice(b.precio)}</b></div>
-      ${b.tipo === "spot" ? celda("PnL según Pionex", b.pnlPionex) : ""}
       ${b.tipo === "futures" ? `
         <div><span>Posición</span><b>${fmtQty(b.posicion)} @ ${fmtPrice(b.precioEntrada)}</b></div>
-        ${celda("PnL flotante", b.flotante)}
+        ${celda("No realizado", b.flotante)}
         ${celda("Funding", b.funding)}
+        ${celda("PnL total según Pionex", b.pnlPionex)}
         <div><span>Liquidación</span><b>${fmtPrice(b.liquidacion)}</b></div>` : ""}
       <div><span>Rango</span><b>${fmtPrice(b.bottom)} – ${fmtPrice(b.top)}</b></div>
       <div><span>Grillas</span><b>${b.grillas ?? "—"}</b></div>
@@ -800,7 +800,7 @@ function filaBot(b) {
 
 function filaBotCerrado(b) {
   const d = dias(b.creado, b.cerradoEn);
-  const sub = [TIPO_BOT[b.tipo],
+  const sub = [TIPO_BOT[b.tipo] + (b.bono ? " (bono)" : ""),
                b.cerradoEn ? `cerrado ${fmtFecha(b.cerradoEn)}` : "",
                d == null ? "" : `${d} d`,
                MOTIVO[b.motivoCierre] || b.motivoCierre || ""].filter(Boolean).join(" · ");

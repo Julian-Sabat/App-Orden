@@ -7,8 +7,13 @@
 //   - PnL actual: lo que vale hoy el bot menos lo invertido. Baja cuando retiras
 //     ganancias de la grilla, porque esa plata ya no está dentro del bot.
 //   - PnL total: el actual + todo lo retirado. Retirar no lo mueve.
-// Los cálculos salen solo de la documentación oficial (pionex.com/docs/api-docs/bot-api);
-// no se validaron contra una respuesta real. Ver los supuestos marcados con "Supuesto".
+//
+// Fórmulas validadas contra la respuesta real de la cuenta (2026-09-15), no solo la doc:
+// la API trae campos no documentados (totalRealizedProfit, profitExited, gridProfit en
+// futuros) y `quoteInvestment` crece al reinvertir ganancias. En futuros, el cálculo por
+// caja de abajo coincide con el propio de Pionex (totalRealizedProfit + funding + no
+// realizado) con 1-2 USD de diferencia, que son comisiones. Ver "Supuesto" para lo que
+// no se pudo contrastar (spot grid: no hay bots activos para comparar).
 
 import * as DB from "./db.js";
 
@@ -94,8 +99,8 @@ function precioPar(base, quote, perp) {
   const sp = PX.data?.tickers?.spot || {};
   const pp = PX.data?.tickers?.perp || {};
   if (perp) {
-    // Supuesto: los perpetuos usan "BTC_USDT_PERP"; la doc no da el formato del símbolo.
-    const v = pp[`${base}_${quote}_PERP`] ?? pp[`${base}_${quote}`];
+    // Verificado: el ticker perpetuo es "SOL_USDT_PERP" (y el bot trae base "SOL.PERP").
+    const v = pp[`${base}_${quote}_PERP`];
     if (v != null) return v;
   }
   if (sp[`${base}_${quote}`] != null) return sp[`${base}_${quote}`];
@@ -120,54 +125,60 @@ export function normalizarBot(raw, cerrado) {
   const tipo = tipoBot(raw.buOrderType);
   if (!tipo) return null;
   const d = raw.buOrderData || {};
-  const base = raw.base || d.base, quote = raw.quote || d.quote;
+  // Los bots de futuros traen base "SOL.PERP": sin limpiarlo no se encuentra el precio.
+  const base = String(raw.base || d.base || "").replace(/\.PERP$/i, "");
+  const quote = raw.quote || d.quote;
   const qUsd = usdDe(quote) ?? 1;
   const px = precioPar(base, quote, tipo === "futures");
-  const retirado = z(d.profitWithdrawn);
 
   const bot = {
     id: raw.buOrderId, tipo, base, quote, cerrado,
     nombre: raw.customizeName || raw.botName || null,
     creado: n(raw.createTime), cerradoEn: n(raw.closeTime),
-    precio: px, retirado: retirado * qUsd,
+    precio: px,
     top: n(d.top), bottom: n(d.bottom), grillas: n(d.row),
     motivoCierre: d.reasonBy || null,
+    profitGrilla: n(d.gridProfit) == null ? null : n(d.gridProfit) * qUsd,
   };
 
   if (tipo === "spot") {
-    // Supuesto: la inversión es lo configurado en quote + lo configurado en base valorizado
-    // al precio de apertura (si invertiste solo USDT, baseTotalInvestment es 0).
-    const inversion = (n(d.quoteTotalInvestment) ?? z(d.quoteInvestment)) +
-                      (n(d.baseTotalInvestment) ?? z(d.baseInvestment)) * z(d.openPrice);
-    bot.inversion = inversion * qUsd;
-    bot.profitGrilla = n(d.gridProfit) == null ? null : n(d.gridProfit) * qUsd;
-    bot.pnlPionex = n(d.realizedProfit) == null ? null : n(d.realizedProfit) * qUsd;
+    // Con reinversión automática la ganancia figura como retirada pero vuelve al bot:
+    // sumarla otra vez la contaría doble. Supuesto: solo un bot spot cerrado para ver esto.
+    const reinvertido = d.profitAutoReinvest ? z(d.profitReinvest) : 0;
+    bot.retirado = Math.max(0, z(d.profitWithdrawn) - reinvertido) * qUsd;
+    // usdtInvestment es lo que salió de tu cuenta. baseInvestment NO se suma: es la parte
+    // de esa misma inversión que el bot convirtió a base al arrancar.
+    bot.inversion = n(d.usdtInvestment) ||
+      (z(d.quoteTotalInvestment) + z(d.baseTotalInvestment) * z(d.openPrice)) * qUsd;
 
     if (!cerrado) {
-      // Valor hoy = lo que el bot tiene adentro (base a precio de mercado + quote).
-      // Lo retirado ya salió del bot: por eso el actual lo excluye y el total lo suma.
+      // Supuesto (sin bots spot activos para contrastar): valor = lo que el bot tiene adentro.
       const valor = px == null ? null : z(d.baseAmount) * px + z(d.quoteAmount);
       bot.valor = valor == null ? null : valor * qUsd;
       bot.pnlActual = bot.valor == null ? null : bot.valor - bot.inversion;
       bot.pnlTotal = bot.pnlActual == null ? null : bot.pnlActual + bot.retirado;
     } else {
-      // Cerrado: la doc define realizedProfit como "grid profit + float P&L" total.
-      // Supuesto: retirar ganancias no lo descuenta (no es una pérdida, es un traspaso).
-      bot.valor = 0;
-      bot.pnlTotal = bot.pnlPionex;
+      // realizedProfit llega en 0 en un bot cerrado real: se usa lo que volvió a la cuenta.
+      const salio = n(d.unlockUsdtAmount);
+      bot.pnlTotal = salio != null ? salio + bot.retirado - bot.inversion : n(d.realizedProfit);
       bot.pnlActual = null;
+      bot.valor = 0;
     }
   } else {
     bot.trend = d.trend || null;          // long | short | no_trend
     bot.leverage = n(d.leverage);
     bot.liquidacion = n(d.liquidationPrice);
-    bot.inversion = z(d.quoteInvestment) * qUsd;
-    bot.funding = z(d.fundingFeePayment) * qUsd;          // la doc lo da negativo
-    bot.profitGrilla = z(d.profitReduce) * qUsd;
+    bot.funding = z(d.fundingFeePayment) * qUsd;          // viene negativo
+    bot.retirado = z(d.profitWithdrawn) * qUsd;
+    bot.bono = d.investmentFrom === "FUTURE_GRID_BONUS";
+    if (bot.profitGrilla == null) bot.profitGrilla = z(d.profitReduce) * qUsd;
+    // Capital puesto: quoteInvestment crece con la ganancia reinvertida (profitExited),
+    // que no es plata nueva; extraMargin sí lo es.
+    bot.inversion = (z(d.quoteInvestment) - z(d.profitExited) + z(d.extraMargin)) * qUsd;
+    const pionex = n(d.totalRealizedProfit);
 
     if (!cerrado) {
-      // Supuesto: el signo de `position` no está documentado. En un grid short se
-      // fuerza negativo y en long positivo; en neutral se respeta el que venga.
+      // Supuesto: todos los bots reales son long con position positiva; en short se fuerza negativa.
       let pos = z(d.position);
       if (bot.trend === "short") pos = -Math.abs(pos);
       else if (bot.trend === "long") pos = Math.abs(pos);
@@ -175,17 +186,22 @@ export function normalizarBot(raw, cerrado) {
       bot.precioEntrada = n(d.positionOpenPrice);
       const flotante = px != null && bot.precioEntrada != null ? pos * (px - bot.precioEntrada) * qUsd : null;
       bot.flotante = flotante;
-      // Supuesto: profitReduce es acumulado bruto (no descuenta lo retirado).
-      bot.pnlTotal = flotante == null ? null : bot.profitGrilla + flotante + bot.funding;
-      bot.pnlActual = bot.pnlTotal == null ? null : bot.pnlTotal - bot.retirado;
-      bot.valor = bot.pnlActual == null ? null : bot.inversion + bot.pnlActual;
+      // Valor hoy = margen (caja del bot, ya descuenta lo retirado) + PnL no realizado.
+      bot.valor = flotante == null ? null : z(d.marginBalance) * qUsd + flotante;
+      bot.pnlActual = bot.valor == null ? null : bot.valor - bot.inversion;
+      bot.pnlTotal = bot.pnlActual == null ? null : bot.pnlActual + bot.retirado;
+      bot.pnlPionex = pionex == null || flotante == null ? null : pionex * qUsd + bot.funding + flotante;
     } else {
-      // Cerrado: lo que volvió a la cuenta principal − lo invertido + lo retirado antes.
-      const usdtIn = n(d.usdtInvestment), usdtOut = n(d.unlockUsdtAmount);
-      const qOut = n(d.unlockQuoteAmount);
-      if (usdtIn && usdtOut != null) bot.pnlTotal = usdtOut - usdtIn + bot.retirado;
-      else if (qOut != null && n(d.quoteInvestment)) bot.pnlTotal = (qOut - z(d.quoteInvestment)) * qUsd + bot.retirado;
-      else bot.pnlTotal = null;
+      if (bot.bono) {
+        // Bot con bono de Pionex: el capital no era tuyo, lo que volvió no sirve para medir.
+        bot.pnlTotal = pionex == null ? null : (pionex - z(d.bonusFee)) * qUsd + bot.funding;
+        bot.inversion = 0;
+      } else {
+        // Lo que volvió a la cuenta + lo retirado antes − el capital puesto.
+        const salio = n(d.unlockUsdtAmount) ?? n(d.marginBalance);
+        bot.pnlTotal = salio != null ? salio * qUsd + bot.retirado - bot.inversion
+                     : pionex == null ? null : pionex * qUsd + bot.funding;
+      }
       bot.pnlActual = null;
       bot.valor = 0;
     }

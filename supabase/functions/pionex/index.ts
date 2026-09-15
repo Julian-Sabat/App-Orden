@@ -17,6 +17,9 @@
 
 const PIONEX = "https://api.pionex.com";
 const MAX_PAGINAS = 20;
+// Cloudflare de Pionex rechaza con "error code: 1010" algunos User-Agent por defecto
+// (verificado con el de Python; el de Deno no se probó): se manda uno explícito.
+const UA = { "User-Agent": "AppOrden/1.0" };
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -62,7 +65,7 @@ async function getPrivado(path: string, params: Record<string, string>, key: str
   const enviado = claves.map((k) => `${k}=${encodeURIComponent(p[k])}`).join("&");
   const firma = await hmacHex(secret, `GET${path}?${firmado}`);
   const r = await fetch(`${PIONEX}${path}?${enviado}`, {
-    headers: { "PIONEX-KEY": key, "PIONEX-SIGNATURE": firma },
+    headers: { ...UA, "PIONEX-KEY": key, "PIONEX-SIGNATURE": firma },
   });
   const j = await r.json().catch(() => null);
   if (!r.ok || !j || j.result === false) {
@@ -72,7 +75,7 @@ async function getPrivado(path: string, params: Record<string, string>, key: str
 }
 
 async function getPublico(path: string) {
-  const r = await fetch(`${PIONEX}${path}`);
+  const r = await fetch(`${PIONEX}${path}`, { headers: UA });
   const j = await r.json().catch(() => null);
   if (!r.ok || !j || j.result === false) throw new Error(`${path}: ${j?.code ?? r.status}`);
   return j.data;

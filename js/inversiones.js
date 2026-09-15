@@ -13,6 +13,7 @@
 // Por eso la vista de detalle muestra los dos.
 
 import * as DB from "./db.js";
+import * as PXM from "./pionex.js";
 
 export const INV = {
   transactions: [],
@@ -27,6 +28,7 @@ export const INV = {
   filterPortfolio: "", // "" = todos los grupos
   expanded: null,      // símbolo con detalle abierto
   cerradasAbierto: false,   // la sección de cerradas arranca plegada
+  botsCerradosAbierto: false,
 };
 
 let ctx = {};          // utilidades que presta app.js: render, showToast, openModal, closeModal
@@ -117,6 +119,7 @@ export async function load(force) {
     INV.settings = data.inv_settings[0] || null;
     INV.loaded = true;
     readPriceCache();
+    PXM.leerCache();
   } catch (e) {
     ctx.showToast("⚠️ " + e.message);
   } finally {
@@ -127,6 +130,24 @@ export async function load(force) {
 // ---------- Posiciones ----------
 
 export const SIN_GRUPO = "Sin clasificar";
+// Clave interna del grupo Pionex: no puede chocar con un portafolio de CMC que se llame "Pionex".
+export const PIONEX = "__pionex__";
+
+function pionexActivo() {
+  return PXM.PX.disponible !== false && !!PXM.PX.data;
+}
+
+export function borrarCachePionex() {
+  PXM.borrarCache();
+}
+
+// Al entrar a la sección: Pionex primero (puede traer monedas nuevas), después precios.
+export async function refrescarSiViejo() {
+  let cambio = false;
+  if (PXM.PX.disponible !== false && !PXM.fresco()) { await PXM.refresh(); cambio = true; }
+  if (!preciosFrescos()) { await refreshPrices(true); cambio = true; }
+  return cambio;
+}
 
 // Clave de grupo de un movimiento. El import la toma del nombre del archivo.
 export function grupoDe(tx) {
@@ -136,12 +157,13 @@ export function grupoDe(tx) {
 // Nombre visible de un grupo: el que el usuario le puso, o la clave tal cual.
 export function labelGrupo(key) {
   const labels = INV.settings?.portfolio_labels || {};
-  return labels[key] || key;
+  return labels[key] || (key === PIONEX ? "Pionex" : key);
 }
 
 // Grupos existentes, ordenados por valor de sus posiciones abiertas.
 export function grupos() {
   const keys = [...new Set(INV.transactions.map(grupoDe))];
+  if (pionexActivo()) keys.push(PIONEX);
   return keys
     .map((k) => ({ key: k, label: labelGrupo(k), valor: resumen(k).valor }))
     .sort((a, b) => b.valor - a.valor);
@@ -210,18 +232,57 @@ export function positions(pf) {
   return out;
 }
 
+// Saldos spot de Pionex con forma de posición. No hay base de costo: la API entrega
+// saldos, no el historial de compras. Precio: el ticker de Pionex, y si no hay, CoinGecko.
+// Los saldos de menos de US$1 (polvo del exchange) no se listan ni suman.
+function positionsPionex() {
+  const hidden = new Set(INV.tokens.filter((t) => t.hidden).map((t) => t.symbol));
+  return PXM.saldos()
+    .map(({ coin, qty }) => {
+      const px = PXM.usdDe(coin) ?? priceOf(coin);
+      return {
+        key: "px:" + coin, symbol: coin, pionex: true, qty, price: px,
+        value: px == null ? null : qty * px,
+        name: INV.tokens.find((t) => t.symbol === coin)?.name || null,
+        cost: 0, realized: 0, unrealized: 0, unrealizedPct: null, abierta: true, nTx: 0,
+      };
+    })
+    .filter((p) => !hidden.has(p.symbol) && p.value != null && p.value >= 1)
+    .sort((a, b) => b.value - a.value);
+}
+
 export function resumen(pf) {
+  const debt = Number(INV.settings?.debt || 0);
+
+  if (pf === PIONEX) {
+    const pos = positionsPionex();
+    const bots = PXM.resumenBots();
+    const valorSpot = pos.reduce((s, p) => s + p.value, 0);
+    const valor = valorSpot + bots.valor;
+    return { pos, abiertas: pos, valor, valorSpot, bots, costo: 0, realized: 0, unrealized: 0,
+             sinPrecio: bots.sinPrecio, debt, neto: valor - debt, filtrado: true, pionex: true };
+  }
+
   const pos = positions(pf);
-  const abiertas = pos.filter((p) => p.abierta && !p.hidden);
-  const valor = abiertas.reduce((s, p) => s + (p.value || 0), 0);
+  let abiertas = pos.filter((p) => p.abierta && !p.hidden);
   const costo = abiertas.reduce((s, p) => s + p.cost, 0);
-  const sinPrecio = abiertas.filter((p) => p.price == null).length;
   const realized = pos.reduce((s, p) => s + p.realized, 0);
   const unrealized = abiertas.reduce((s, p) => s + p.unrealized, 0);
-  const debt = Number(INV.settings?.debt || 0);
+  let sinPrecio = abiertas.filter((p) => p.price == null).length;
+  let valor = abiertas.reduce((s, p) => s + (p.value || 0), 0);
+
+  // "Todos" incluye Pionex: sus saldos como filas aparte (no se mezclan con la base de
+  // costo de CMC) y el valor de los bots en el total. Costo y PnL siguen siendo de CMC.
+  let px = null;
+  if (!pf && pionexActivo()) {
+    px = resumen(PIONEX);
+    abiertas = [...abiertas, ...px.pos].sort((a, b) => (b.value || 0) - (a.value || 0));
+    valor += px.valor;
+    sinPrecio += px.sinPrecio;
+  }
   // Con un grupo filtrado el neto no tiene sentido: la deuda es global, no del grupo.
   return { pos, abiertas, valor, costo, realized, unrealized, sinPrecio, debt,
-           neto: valor - debt, filtrado: !!pf };
+           neto: valor - debt, filtrado: !!pf, px };
 }
 
 // ---------- Precios (CoinGecko, desde el dispositivo) ----------
@@ -273,6 +334,15 @@ export async function refreshPrices(silencioso) {
     if (tk && tk.manual_price != null) continue;          // precio fijado a mano
     if (tk && tk.coingecko_id) { pend.push({ sym: p.symbol, id: tk.coingecko_id }); continue; }
     pend.push({ sym: p.symbol, id: null, name: p.name });
+  }
+  // Saldos de Pionex: el precio ya viene del exchange, pero CoinGecko aporta los
+  // cambios 30d/7d/1d de la fila. Solo los que valen algo, para no gastar /search en polvo.
+  const yaEsta = new Set(pend.map((x) => x.sym));
+  for (const p of positionsPionex()) {
+    if (yaEsta.has(p.symbol)) continue;
+    const tk = INV.tokens.find((t) => t.symbol === p.symbol);
+    if (tk && tk.manual_price != null) continue;
+    pend.push({ sym: p.symbol, id: tk?.coingecko_id || null, name: p.name });
   }
 
   // 1) resolver los símbolos que todavía no tienen id (una vez por símbolo)
@@ -489,6 +559,7 @@ export async function importarArchivos(fileList) {
 
 export function renderInversiones() {
   if (!INV.loaded) return `<div class="loading">Cargando inversiones…</div>`;
+  if (INV.filterPortfolio === PIONEX && !pionexActivo()) INV.filterPortfolio = "";
   const r = resumen(INV.filterPortfolio);
   const priv = privacyOn();
 
@@ -538,6 +609,7 @@ function signo(v) {
 }
 
 function vistaResumen(r) {
+  if (r.pionex) return vistaPionex(r);
   const frescura = INV.pricesAt
     ? `Precios de ${new Date(INV.pricesAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}`
     : "Sin precios todavía — toca ↻ arriba";
@@ -583,6 +655,20 @@ function vistaResumen(r) {
     ? abiertas.map((p) => filaPosicion(p, r.valor)).join("")
     : `<div class="empty">Todavía no hay posiciones. Importa el CSV de CoinMarketCap o agrega un movimiento con el +.</div>`;
 
+  // En "Todos" los bots no se listan uno a uno: una tarjeta resumen lleva al grupo Pionex.
+  const b = r.px?.bots;
+  const botsResumen = b && (b.activos.length || b.cerrados.length) ? `
+    <button class="card inv-bots-resumen" data-action="inv-grupo" data-pf="${PIONEX}">
+      <div class="inv-pos-id">
+        <span class="inv-sym">Bots ${esc(labelGrupo(PIONEX))}</span>
+        <span class="inv-name">${b.activos.length} activo${b.activos.length === 1 ? "" : "s"} · ${b.cerrados.length} cerrado${b.cerrados.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="inv-pos-num">
+        <span class="inv-val">${money(b.valor)}</span>
+        <span class="inv-pnl ${signo(b.pnlTotal)}">PnL total ${money(b.pnlTotal)}</span>
+      </div>
+    </button>` : "";
+
   // Importar es una acción esporádica: va al final, chica, no compitiendo con las posiciones.
   const acciones = `
     <div class="inv-acciones">
@@ -603,13 +689,146 @@ function vistaResumen(r) {
     : "";
 
   return chipsGrupo() + patrimonio + pnl +
-    `<h2 class="section-title">Posiciones (${abiertas.length})</h2>` + lista + cerradasHtml + acciones;
+    `<h2 class="section-title">Posiciones (${abiertas.length})</h2>` + lista + botsResumen + cerradasHtml + acciones;
+}
+
+// ---------- Vista del grupo Pionex ----------
+
+const hora = (ms) => new Date(ms).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+const TIPO_BOT = { spot: "Spot grid", futures: "Futures grid" };
+const TREND = { long: "Long", short: "Short", no_trend: "Neutral" };
+const MOTIVO = { user_cancel: "cerrado por ti", loss_stop: "stop loss", profit_stop: "take profit",
+                 force_liquidation: "liquidado", not_enough_balance: "sin saldo", create_failed: "falló al crear" };
+
+function dias(desde, hasta) {
+  if (!desde) return null;
+  return Math.max(0, Math.floor(((hasta || Date.now()) - desde) / 86400000));
+}
+
+function vistaPionex(r) {
+  const { PX } = PXM;
+  const b = r.bots;
+  const total = resumen().valor;
+  const peso = total > 0 ? (r.valor / total) * 100 : null;
+  const estado = PX.loading ? "Actualizando…" : PX.at ? `Datos de ${hora(PX.at)}` : "Sin datos todavía — toca ↻ arriba";
+
+  const hero = `
+    <section class="inv-hero">
+      <div class="inv-hero-label">${esc(labelGrupo(PIONEX))}</div>
+      <div class="inv-hero-value">${money(r.valor)}</div>
+      <div class="inv-hero-sub">${esc(estado)}${peso == null ? "" : ` · ${peso.toFixed(1)}% del total`}${r.sinPrecio ? ` · ${r.sinPrecio} bot(s) sin precio` : ""}</div>
+      ${PX.error ? `<div class="inv-aviso">⚠️ ${esc(PX.error)}</div>` : ""}
+      <div class="inv-hero-grid">
+        <div><span>Bots activos</span><strong>${money(b.valor)}</strong></div>
+        <div><span>Saldo spot</span><strong>${money(r.valorSpot)}</strong></div>
+      </div>
+    </section>`;
+
+  const pnl = `
+    <section class="inv-pnl">
+      <div><span>PnL total bots</span><strong class="${signo(b.pnlTotal)}">${money(b.pnlTotal)}</strong></div>
+      <div><span>PnL actual bots</span><strong class="${signo(b.pnlActual)}">${money(b.pnlActual)}</strong></div>
+      <div><span>PnL cerrados</span><strong class="${signo(b.pnlCerrados)}">${money(b.pnlCerrados)}</strong></div>
+    </section>`;
+
+  const activos = b.activos.length
+    ? b.activos.map(filaBot).join("")
+    : `<div class="empty">No hay bots activos.</div>`;
+
+  const saldos = r.pos.length
+    ? r.pos.map((p) => filaPosicion(p, r.valor)).join("")
+    : `<div class="empty">Sin saldos spot sobre US$1.</div>`;
+
+  const cerrados = b.cerrados.length
+    ? `<button class="inv-cerradas-head" data-action="inv-toggle-bots-cerrados" aria-expanded="${INV.botsCerradosAbierto}">
+         <span class="section-title">Bots cerrados (${b.cerrados.length})</span>
+         <span class="inv-cerradas-suma ${signo(b.pnlCerrados)}">${money(b.pnlCerrados)}</span>
+         <span class="inv-chevron ${INV.botsCerradosAbierto ? "abierto" : ""}">›</span>
+       </button>
+       ${INV.botsCerradosAbierto ? `<div class="inv-tx-list">${b.cerrados.map(filaBotCerrado).join("")}</div>` : ""}`
+    : "";
+
+  return chipsGrupo() + hero + pnl +
+    `<h2 class="section-title">Bots activos (${b.activos.length})</h2>` + activos +
+    `<h2 class="section-title">Saldo spot (${r.pos.length})</h2>` + saldos + cerrados;
+}
+
+function filaBot(b) {
+  const key = "bot:" + b.id;
+  const abierto = INV.expanded === key;
+  const d = dias(b.creado);
+  const sub = [TIPO_BOT[b.tipo],
+               b.tipo === "futures" ? [TREND[b.trend], b.leverage ? b.leverage + "x" : ""].filter(Boolean).join(" ") : "",
+               d == null ? "" : `${d} d`].filter(Boolean).join(" · ");
+
+  const celda = (label, v, cls) => `<div class="${cls || ""}"><span>${label}</span><b class="${signo(v)}">${money(v)}</b></div>`;
+  const detalle = abierto ? `
+    <div class="inv-detalle">
+      <div><span>Inversión</span><b>${money(b.inversion)}</b></div>
+      <div><span>Retirado</span><b>${money(b.retirado)}</b></div>
+      ${celda("Profit de grilla", b.profitGrilla)}
+      <div><span>Precio actual</span><b>${fmtPrice(b.precio)}</b></div>
+      ${b.tipo === "futures" ? `
+        <div><span>Posición</span><b>${fmtQty(b.posicion)} @ ${fmtPrice(b.precioEntrada)}</b></div>
+        ${celda("No realizado", b.flotante)}
+        ${celda("Funding", b.funding)}
+        ${celda("PnL total según Pionex", b.pnlPionex)}
+        <div><span>Liquidación</span><b>${fmtPrice(b.liquidacion)}</b></div>` : ""}
+      <div><span>Rango</span><b>${fmtPrice(b.bottom)} – ${fmtPrice(b.top)}</b></div>
+      <div><span>Grillas</span><b>${b.grillas ?? "—"}</b></div>
+      <div><span>Creado</span><b>${b.creado ? fmtFecha(b.creado) : "—"}</b></div>
+      ${b.nombre ? `<div><span>Nombre</span><b class="inv-detalle-nombre">${esc(b.nombre)}</b></div>` : ""}
+    </div>` : "";
+
+  return `<article class="card inv-pos inv-bot ${abierto ? "expanded" : ""}">
+    <div class="inv-pos-main" data-action="inv-expandir" data-sym="${esc(key)}">
+      <div class="inv-pos-id">
+        <span class="inv-sym">${esc(b.base)}<span class="inv-quote">/${esc(b.quote)}</span></span>
+        <span class="inv-name">${esc(sub)}</span>
+      </div>
+      <div class="inv-cambios inv-bot-pnls">
+        ${celda("PnL total", b.pnlTotal)}${celda("PnL actual", b.pnlActual)}
+      </div>
+      <div class="inv-pos-num">
+        <span class="inv-val">${money(b.valor)}</span>
+        <span class="inv-pnl ${signo(b.pnlTotal)}">${b.pnlTotal == null ? "sin precio" : fmtPct(b.pnlTotalPct)}</span>
+      </div>
+    </div>
+    ${detalle}
+  </article>`;
+}
+
+function filaBotCerrado(b) {
+  const d = dias(b.creado, b.cerradoEn);
+  const sub = [TIPO_BOT[b.tipo] + (b.bono ? " (bono)" : ""),
+               b.cerradoEn ? `cerrado ${fmtFecha(b.cerradoEn)}` : "",
+               d == null ? "" : `${d} d`,
+               MOTIVO[b.motivoCierre] || b.motivoCierre || ""].filter(Boolean).join(" · ");
+  return `<article class="card inv-tx">
+    <div class="inv-tx-main">
+      <div>
+        <div class="inv-tx-top"><span class="inv-sym">${esc(b.base)}<span class="inv-quote">/${esc(b.quote)}</span></span></div>
+        <div class="inv-tx-sub">${esc(sub)}</div>
+      </div>
+      <div class="inv-bot-cerrado-num">
+        <span class="${signo(b.pnlTotal)}">${money(b.pnlTotal)}</span>
+        <span class="inv-sub">${b.pnlTotalPct == null ? (b.pnlTotal == null ? "sin datos" : "") : fmtPct(b.pnlTotalPct)}</span>
+      </div>
+    </div>
+  </article>`;
 }
 
 function filaPosicion(p, valorTotal) {
   const peso = valorTotal > 0 && p.value != null ? (p.value / valorTotal) * 100 : null;
-  const abierto = INV.expanded === p.symbol;
-  const detalle = abierto ? `
+  const key = p.key || p.symbol;
+  const abierto = INV.expanded === key;
+  const detalle = abierto && p.pionex ? `
+    <div class="inv-detalle">
+      <div><span>Cantidad</span><b>${fmtQty(p.qty)}</b></div>
+      <div><span>Nombre</span><b class="inv-detalle-nombre">${esc(p.name || "—")}</b></div>
+      <div><span>Origen</span><b>Saldo spot en Pionex</b></div>
+      <div><span>Costo</span><b>No disponible por API</b></div>
+    </div>` : abierto ? `
     <div class="inv-detalle">
       <div><span>Cantidad</span><b>${fmtQty(p.qty)}</b></div>
       <div><span>Nombre</span><b class="inv-detalle-nombre">${esc(p.name || "—")}</b></div>
@@ -631,9 +850,9 @@ function filaPosicion(p, valorTotal) {
     `<div><span>${label}</span><b class="${signo(v)}">${v == null ? "—" : fmtPctCorto(v)}</b></div>`;
 
   return `<article class="card inv-pos ${abierto ? "expanded" : ""}">
-    <div class="inv-pos-main" data-action="inv-expandir" data-sym="${esc(p.symbol)}">
+    <div class="inv-pos-main" data-action="inv-expandir" data-sym="${esc(key)}">
       <div class="inv-pos-id">
-        <span class="inv-sym">${esc(p.symbol)}</span>
+        <span class="inv-sym">${esc(p.symbol)}${p.pionex && INV.filterPortfolio !== PIONEX ? ` <span class="inv-origen">Pionex</span>` : ""}</span>
         <span class="inv-name">${fmtPrice(p.price)}</span>
         <span class="inv-pos-peso">${peso == null ? "" : `${peso.toFixed(1)}% del portafolio`}</span>
       </div>
@@ -642,7 +861,7 @@ function filaPosicion(p, valorTotal) {
       </div>
       <div class="inv-pos-num">
         <span class="inv-val">${money(p.value)}</span>
-        <span class="inv-pnl ${signo(p.unrealized)}">${p.price == null ? "sin precio" : fmtPct(p.unrealizedPct)}</span>
+        <span class="inv-pnl ${signo(p.unrealized)}">${p.price == null ? "sin precio" : p.pionex ? "" : fmtPct(p.unrealizedPct)}</span>
       </div>
     </div>
     ${detalle}
@@ -661,6 +880,9 @@ function vistaHistorial(r) {
     ${symbols.map((s) => `<button class="fchip ${INV.filterSymbol === s ? "active" : ""}" data-action="inv-filtro" data-sym="${esc(s)}">${esc(s)}</button>`).join("")}
   </div>`;
 
+  if (INV.filterPortfolio === PIONEX) {
+    return chipsGrupo() + `<div class="empty">Pionex se lee en vivo desde su API: muestra saldos y bots, no un historial de movimientos.</div>`;
+  }
   if (!tx.length) return chipsGrupo() + chips + `<div class="empty">Sin movimientos.</div>`;
 
   const filas = tx.map((t) => {
@@ -753,8 +975,10 @@ function modalRenombrar(pf) {
     <form data-form="inv-renombrar" data-pf="${esc(pf)}">
       <label>Nombre visible
         <input type="text" name="label" value="${esc(actual)}" required maxlength="40" /></label>
-      <p class="hint">Internamente el grupo sigue llamándose <b>${esc(pf)}</b>, que es como viene del
-        archivo de CoinMarketCap. Por eso volver a importar ese export no crea un grupo duplicado.</p>
+      ${pf === PIONEX
+        ? `<p class="hint">Es el grupo que se lee en vivo desde la API de Pionex.</p>`
+        : `<p class="hint">Internamente el grupo sigue llamándose <b>${esc(pf)}</b>, que es como viene del
+        archivo de CoinMarketCap. Por eso volver a importar ese export no crea un grupo duplicado.</p>`}
       <div class="modal-actions">
         ${renombrado ? `<button type="button" class="btn-small" data-action="inv-restaurar-nombre" data-pf="${esc(pf)}">Volver al original</button>` : ""}
         <button type="button" class="btn-small" data-action="close-modal">Cancelar</button>
@@ -800,6 +1024,12 @@ export async function handleAction(a, el) {
 
   if (a === "inv-renombrar") { ctx.openModal(modalRenombrar(el.dataset.pf)); return true; }
 
+  if (a === "inv-toggle-bots-cerrados") {
+    INV.botsCerradosAbierto = !INV.botsCerradosAbierto;
+    ctx.render();
+    return true;
+  }
+
   if (a === "inv-toggle-cerradas") {
     INV.cerradasAbierto = !INV.cerradasAbierto;
     ctx.render();
@@ -828,6 +1058,7 @@ export async function handleAction(a, el) {
 
   if (a === "inv-precios") {
     ctx.showToast("Actualizando precios…");
+    if (PXM.PX.disponible !== false || !DB.isRemote()) { await PXM.refresh(); ctx.render(); }
     await refreshPrices();
     ctx.render();
     return true;

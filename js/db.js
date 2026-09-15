@@ -206,6 +206,24 @@ export async function fetchInv() {
   return { inv_transactions: tx.data, inv_settings: st.data, inv_tokens: tk.data };
 }
 
+// Edge Function de Supabase. El token de sesión va solo (lo pone supabase-js).
+// El error lleva `status` para que quien llama distinga "no publicada" (404) de un fallo.
+export async function invokeFunction(name) {
+  if (!supabase) throw new Error("Requiere modo sincronizado");
+  const { data, error } = await supabase.functions.invoke(name);
+  if (error) {
+    const res = error.context;
+    let msg = error.message;
+    if (res && typeof res.json === "function") {
+      try { const j = await res.json(); if (j?.error) msg = j.error; } catch (e) { /* cuerpo no JSON */ }
+    }
+    const err = new Error(msg);
+    err.status = res?.status ?? null;
+    throw err;
+  }
+  return data;
+}
+
 // Migración: si hay datos del modo local y la cuenta remota está vacía, los sube.
 export async function migrateLocalToRemote() {
   if (!supabase) return false;

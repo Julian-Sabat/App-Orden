@@ -176,8 +176,7 @@ function renderInversiones() {
     Inv.load().then(async () => {
       if (route().view !== "inversiones") return;
       render();
-      if (!Inv.preciosFrescos()) {
-        await Inv.refreshPrices(true);
+      if (await Inv.refrescarSiViejo()) {
         if (route().view === "inversiones") render();
       }
     });
@@ -757,6 +756,7 @@ document.addEventListener("click", async (e) => {
     if (confirm("¿Cerrar sesión?" + extra)) {
       clearSavedLogin();
       DB.clearCache();
+      Inv.borrarCachePionex();
       await DB.signOut();
       render();
     }

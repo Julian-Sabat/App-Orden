@@ -145,8 +145,19 @@ export function borrarCachePionex() {
 export async function refrescarSiViejo() {
   let cambio = false;
   if (PXM.PX.disponible !== false && !PXM.fresco()) { await PXM.refresh(); cambio = true; }
-  if (!preciosFrescos()) { await refreshPrices(true); cambio = true; }
+  if (!preciosFrescos() || faltanCambiosPionex()) { await refreshPrices(true); cambio = true; }
   return cambio;
+}
+
+// Un saldo de Pionex puede llegar después del último pedido a CoinGecko (cache de precios
+// fresco de los tokens de CMC): sin esto, sus cambios 30d/7d/1d no aparecían hasta tocar ↻.
+// Los ya buscados sin éxito en CoinGecko (coingecko_id null guardado) no fuerzan otro pedido.
+function faltanCambiosPionex() {
+  return positionsPionex().some((p) => {
+    if (INV.prices[p.symbol]) return false;
+    const tk = INV.tokens.find((t) => t.symbol === p.symbol);
+    return !(tk && (tk.manual_price != null || tk.coingecko_id === null));
+  });
 }
 
 // Clave de grupo de un movimiento. El import la toma del nombre del archivo.

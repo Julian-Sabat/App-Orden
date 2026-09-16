@@ -812,9 +812,10 @@ button { font-family: inherit; }
 }
 .inv-pos-peso:empty { display: none; }
 
-/* Importar es esporádico: botón discreto al final de la vista */
-.inv-acciones { margin-top: 18px; display: flex; }
-.inv-importar { margin: 0 auto; }
+/* Exportar e importar son esporádicos: botones discretos al final de la vista. El margen
+   de abajo deja pasar el FAB: con dos botones el bloque llega hasta su franja. */
+.inv-acciones { margin: 18px 0 52px; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
+.inv-importar { margin: 0; }
 
 /* Cerradas: encabezado plegable, arranca cerrado */
 .inv-cerradas-head {

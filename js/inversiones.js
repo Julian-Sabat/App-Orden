@@ -787,9 +787,20 @@ function filaBot(b) {
                d == null ? "" : `${d} d`].filter(Boolean).join(" · ");
 
   const celda = (label, v, cls) => `<div class="${cls || ""}"><span>${label}</span><b class="${signo(v)}">${money(v)}</b></div>`;
+  // Desglose del capital: solo si hubo aportes después de crear el bot o ganancia
+  // reinvertida. Si no, "Inversión" ya cuenta toda la historia.
+  const hayMovs = b.capInicial != null && (Math.abs(b.capAgregado) > 0.01 || b.reinvertido > 0.01);
+  const capital = !hayMovs ? "" :
+    `<div><span>Capital inicial</span><b>${money(b.capInicial)}</b></div>` +
+    (Math.abs(b.capAgregado) <= 0.01 ? "" :
+      `<div><span>${b.capAgregado > 0 ? "Agregado después" : "Sacado después"}</span><b>${money(Math.abs(b.capAgregado))}</b></div>`) +
+    (b.reinvertido <= 0.01 ? "" :
+      `<div><span>Ganancia reinvertida</span><b>${money(b.reinvertido)}</b></div>`);
+
   const detalle = abierto ? `
     <div class="inv-detalle">
       <div><span>Inversión</span><b>${money(b.inversion)}</b></div>
+      ${capital}
       <div><span>Retirado</span><b>${money(b.retirado)}</b></div>
       <div><span>Profit de grilla</span><b class="${signo(b.profitGrilla)}">${money(b.profitGrilla)}${
         b.profitGrillaDentro == null ? "" : ` <small>(${money(b.profitGrillaDentro)} dentro)</small>`}</b></div>

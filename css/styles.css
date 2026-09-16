@@ -921,6 +921,9 @@ button { font-family: inherit; }
   .inv-cambios > div { flex-direction: row; align-items: baseline; gap: 5px; }
   .inv-cambios span { font-size: 11px; }
   .inv-cambios b { font-size: 13.5px; }
+  /* Los bots meten tres montos (total, actual, grilla) donde los tokens meten tres
+     porcentajes: con 16px de gap no entra un monto de cuatro cifras. */
+  .inv-bot-pnls { gap: 6px 10px; flex-wrap: wrap; }
 }
 
 @media (max-width: 359px) {

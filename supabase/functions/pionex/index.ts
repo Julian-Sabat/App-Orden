@@ -102,6 +102,36 @@ async function bots(status: "running" | "finished", key: string, secret: string)
   return out;
 }
 
+// Historial de órdenes spot por moneda: es lo que permite calcular el costo de cada saldo.
+// El endpoint exige un par por llamada y devuelve las 200 más nuevas, así que se pagina
+// hacia atrás con endTime hasta agotar el historial.
+async function ordenesSpot(coins: string[], key: string, secret: string, errores: string[]) {
+  const out: Record<string, unknown[]> = {};
+  for (const coin of coins.slice(0, 20)) {
+    const symbol = `${coin}_USDT`;
+    const acc: unknown[] = [];
+    let endTime = "";
+    try {
+      for (let i = 0; i < 5; i++) {
+        const params: Record<string, string> = { symbol, limit: "200" };
+        if (endTime) params.endTime = endTime;
+        const data = await getPrivado("/api/v1/trade/allOrders", params, key, secret);
+        const orders = data?.orders ?? [];
+        for (const o of orders) {
+          acc.push({ side: o.side, filledSize: o.filledSize, filledAmount: o.filledAmount,
+                     fee: o.fee, feeCoin: o.feeCoin, status: o.status, createTime: o.createTime });
+        }
+        if (orders.length < 200) break;
+        endTime = String(Math.min(...orders.map((o: any) => Number(o.createTime))) - 1);
+      }
+      if (acc.length) out[symbol] = acc;
+    } catch (e) {
+      errores.push(`${symbol}: ${(e as Error).message}`);
+    }
+  }
+  return out;
+}
+
 function mapaTickers(data: any): Record<string, number> {
   const m: Record<string, number> = {};
   for (const t of data?.tickers ?? []) {
@@ -137,10 +167,17 @@ Deno.serve(async (req) => {
   // Cerrados después, en serie: pueden ser varias páginas y el límite es 10 req/s.
   const finished = await intento(bots("finished", key, secret), [] as unknown[]);
 
+  const balances = (bal?.balances ?? []).map((b: any) => ({ coin: b.coin, free: b.free, frozen: b.frozen }));
+  const conSaldo = balances
+    .filter((b: any) => Number(b.free) + Number(b.frozen) > 0 && b.coin !== "USDT")
+    .map((b: any) => b.coin);
+  const ordenes = await intento(ordenesSpot(conSaldo, key, secret, errores), {} as Record<string, unknown[]>);
+
   return json({
     at: Date.now(),
-    balances: (bal?.balances ?? []).map((b: any) => ({ coin: b.coin, free: b.free, frozen: b.frozen })),
+    balances,
     bots: { running, finished },
+    ordenes,
     tickers: { spot: mapaTickers(spot), perp: mapaTickers(perp) },
     errores,
   });

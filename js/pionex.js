@@ -108,6 +108,34 @@ function precioPar(base, quote, perp) {
   return b != null && q ? b / q : null;
 }
 
+// Costo de un saldo spot, reconstruido con las órdenes de la cuenta (promedio móvil,
+// igual que el portafolio de CoinMarketCap). La comisión se cobra en la moneda comprada,
+// así que se descuenta de lo recibido: verificado contra el saldo real de la cuenta.
+export function costoDe(coin) {
+  const ord = PX.data?.ordenes?.[`${coin}_USDT`];
+  if (!ord?.length) return null;
+  const cron = [...ord].sort((a, b) => z(a.createTime) - z(b.createTime));
+  let qty = 0, cost = 0, realized = 0, buyQty = 0, buyCost = 0;
+  for (const o of cron) {
+    const size = z(o.filledSize), monto = z(o.filledAmount);
+    if (size <= 0) continue;
+    const feeBase = o.feeCoin === coin ? z(o.fee) : 0;
+    const feeQuote = o.feeCoin && o.feeCoin !== coin ? z(o.fee) : 0;
+    if (o.side === "BUY") {
+      const recibido = size - feeBase;
+      qty += recibido; cost += monto + feeQuote;
+      buyQty += recibido; buyCost += monto + feeQuote;
+    } else {
+      const avg = qty > 1e-12 ? cost / qty : 0;
+      const usado = Math.min(size, Math.max(qty, 0));
+      realized += monto - feeQuote - avg * usado;
+      qty -= size; cost -= avg * usado;
+    }
+  }
+  const avg = qty > 1e-9 ? cost / qty : buyQty > 0 ? buyCost / buyQty : null;
+  return { qty, cost, realized, avg, nOrdenes: cron.length };
+}
+
 export function saldos() {
   return (PX.data?.balances || [])
     .map((b) => ({ coin: b.coin, qty: z(b.free) + z(b.frozen) }))
@@ -167,14 +195,22 @@ export function normalizarBot(raw, cerrado) {
   } else {
     bot.trend = d.trend || null;          // long | short | no_trend
     bot.leverage = n(d.leverage);
-    bot.liquidacion = n(d.liquidationPrice);
+    // liquidationPrice llega en 0 mientras el bot corre: el precio real está en el estimado,
+    // hacia abajo en un grid long y hacia arriba en uno short.
+    bot.liquidacion = n(d.liquidationPrice) ||
+      (d.trend === "short" ? n(d.estimateLiquidationPriceUp) : n(d.estimateLiquidationPriceDown)) || null;
     bot.funding = z(d.fundingFeePayment) * qUsd;          // viene negativo
     bot.retirado = z(d.profitWithdrawn) * qUsd;
     bot.bono = d.investmentFrom === "FUTURE_GRID_BONUS";
     if (bot.profitGrilla == null) bot.profitGrilla = z(d.profitReduce) * qUsd;
-    // Capital puesto: quoteInvestment crece con la ganancia reinvertida (profitExited),
-    // que no es plata nueva; extraMargin sí lo es.
-    bot.inversion = (z(d.quoteInvestment) - z(d.profitExited) + z(d.extraMargin)) * qUsd;
+    // El profit de grilla del campo es bruto. La app de Pionex muestra solo la parte que
+    // sigue adentro: bruto − retirado − reinvertido (verificado contra la app).
+    bot.profitGrillaDentro = bot.profitGrilla == null ? null
+      : bot.profitGrilla - bot.retirado - z(d.profitReinvest) * qUsd;
+    // Inversión como la muestra la app (incluye lo reinvertido y el margen agregado).
+    bot.inversion = z(d.quoteInvestment) * qUsd;
+    // Capital neto para el cálculo por caja: descuenta la ganancia que se movió a inversión.
+    const capital = (z(d.quoteInvestment) - z(d.profitExited) + z(d.extraMargin)) * qUsd;
     const pionex = n(d.totalRealizedProfit);
 
     if (!cerrado) {
@@ -188,9 +224,15 @@ export function normalizarBot(raw, cerrado) {
       bot.flotante = flotante;
       // Valor hoy = margen (caja del bot, ya descuenta lo retirado) + PnL no realizado.
       bot.valor = flotante == null ? null : z(d.marginBalance) * qUsd + flotante;
-      bot.pnlActual = bot.valor == null ? null : bot.valor - bot.inversion;
-      bot.pnlTotal = bot.pnlActual == null ? null : bot.pnlActual + bot.retirado;
-      bot.pnlPionex = pionex == null || flotante == null ? null : pionex * qUsd + bot.funding + flotante;
+      // PnL total = el mismo número que la app de Pionex muestra como "ganancia total"
+      // (verificado contra la app). Ni retirar ni reinvertir lo bajan: Pionex mueve esa
+      // ganancia a la inversión, pero la sigue contando acá.
+      const porCaja = flotante == null ? null : bot.valor + bot.retirado - capital;
+      bot.pnlCaja = porCaja;
+      bot.pnlTotal = pionex == null || flotante == null ? porCaja
+                   : pionex * qUsd + bot.funding + flotante;
+      // Actual = lo que queda dentro del bot, sin lo ya retirado a la cuenta.
+      bot.pnlActual = bot.pnlTotal == null ? null : bot.pnlTotal - bot.retirado;
     } else {
       if (bot.bono) {
         // Bot con bono de Pionex: el capital no era tuyo, lo que volvió no sirve para medir.
@@ -199,7 +241,7 @@ export function normalizarBot(raw, cerrado) {
       } else {
         // Lo que volvió a la cuenta + lo retirado antes − el capital puesto.
         const salio = n(d.unlockUsdtAmount) ?? n(d.marginBalance);
-        bot.pnlTotal = salio != null ? salio * qUsd + bot.retirado - bot.inversion
+        bot.pnlTotal = salio != null ? salio * qUsd + bot.retirado - capital
                      : pionex == null ? null : pionex * qUsd + bot.funding;
       }
       bot.pnlActual = null;

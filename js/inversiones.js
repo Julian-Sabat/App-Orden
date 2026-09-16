@@ -251,11 +251,19 @@ function positionsPionex() {
   return PXM.saldos()
     .map(({ coin, qty }) => {
       const px = PXM.usdDe(coin) ?? priceOf(coin);
+      const c = PXM.costoDe(coin);
+      // El costo promedio sale de las órdenes, pero se aplica al saldo real: si la moneda
+      // además entró por un bot o una transferencia, las órdenes no explican todo el saldo.
+      const cost = c && c.avg != null ? c.avg * qty : 0;
+      const value = px == null ? null : qty * px;
       return {
-        key: "px:" + coin, symbol: coin, pionex: true, qty, price: px,
-        value: px == null ? null : qty * px,
+        key: "px:" + coin, symbol: coin, pionex: true, qty, price: px, value,
         name: INV.tokens.find((t) => t.symbol === coin)?.name || null,
-        cost: 0, realized: 0, unrealized: 0, unrealizedPct: null, abierta: true, nTx: 0,
+        cost, avgCost: c ? c.avg : null, realized: c ? c.realized : 0, nTx: c ? c.nOrdenes : 0,
+        parcial: !!c && Math.abs(c.qty - qty) > Math.max(1e-6, qty * 0.01),
+        unrealized: value != null && cost > 0 ? value - cost : 0,
+        unrealizedPct: value != null && cost > 0 ? ((value - cost) / cost) * 100 : null,
+        abierta: true,
       };
     })
     .filter((p) => !hidden.has(p.symbol) && p.value != null && p.value >= 1)
@@ -270,15 +278,18 @@ export function resumen(pf) {
     const bots = PXM.resumenBots();
     const valorSpot = pos.reduce((s, p) => s + p.value, 0);
     const valor = valorSpot + bots.valor;
-    return { pos, abiertas: pos, valor, valorSpot, bots, costo: 0, realized: 0, unrealized: 0,
+    const costo = pos.reduce((s, p) => s + p.cost, 0);
+    const unrealized = pos.reduce((s, p) => s + p.unrealized, 0);
+    const realized = pos.reduce((s, p) => s + p.realized, 0);
+    return { pos, abiertas: pos, valor, valorSpot, bots, costo, realized, unrealized,
              sinPrecio: bots.sinPrecio, debt, neto: valor - debt, filtrado: true, pionex: true };
   }
 
   const pos = positions(pf);
   let abiertas = pos.filter((p) => p.abierta && !p.hidden);
-  const costo = abiertas.reduce((s, p) => s + p.cost, 0);
-  const realized = pos.reduce((s, p) => s + p.realized, 0);
-  const unrealized = abiertas.reduce((s, p) => s + p.unrealized, 0);
+  let costo = abiertas.reduce((s, p) => s + p.cost, 0);
+  let realized = pos.reduce((s, p) => s + p.realized, 0);
+  let unrealized = abiertas.reduce((s, p) => s + p.unrealized, 0);
   let sinPrecio = abiertas.filter((p) => p.price == null).length;
   let valor = abiertas.reduce((s, p) => s + (p.value || 0), 0);
 
@@ -290,6 +301,9 @@ export function resumen(pf) {
     abiertas = [...abiertas, ...px.pos].sort((a, b) => (b.value || 0) - (a.value || 0));
     valor += px.valor;
     sinPrecio += px.sinPrecio;
+    costo += px.costo;              // el costo de los saldos spot de Pionex sí se conoce
+    unrealized += px.unrealized;
+    realized += px.realized;
   }
   // Con un grupo filtrado el neto no tiene sentido: la deuda es global, no del grupo.
   return { pos, abiertas, valor, costo, realized, unrealized, sinPrecio, debt,
@@ -777,13 +791,14 @@ function filaBot(b) {
     <div class="inv-detalle">
       <div><span>Inversión</span><b>${money(b.inversion)}</b></div>
       <div><span>Retirado</span><b>${money(b.retirado)}</b></div>
-      ${celda("Profit de grilla", b.profitGrilla)}
+      <div><span>Profit de grilla</span><b class="${signo(b.profitGrilla)}">${money(b.profitGrilla)}${
+        b.profitGrillaDentro == null ? "" : ` <small>(${money(b.profitGrillaDentro)} dentro)</small>`}</b></div>
       <div><span>Precio actual</span><b>${fmtPrice(b.precio)}</b></div>
       ${b.tipo === "futures" ? `
         <div><span>Posición</span><b>${fmtQty(b.posicion)} @ ${fmtPrice(b.precioEntrada)}</b></div>
         ${celda("No realizado", b.flotante)}
         ${celda("Funding", b.funding)}
-        ${celda("PnL total según Pionex", b.pnlPionex)}
+        ${celda("PnL total por caja", b.pnlCaja)}
         <div><span>Liquidación</span><b>${fmtPrice(b.liquidacion)}</b></div>` : ""}
       <div><span>Rango</span><b>${fmtPrice(b.bottom)} – ${fmtPrice(b.top)}</b></div>
       <div><span>Grillas</span><b>${b.grillas ?? "—"}</b></div>
@@ -837,8 +852,16 @@ function filaPosicion(p, valorTotal) {
     <div class="inv-detalle">
       <div><span>Cantidad</span><b>${fmtQty(p.qty)}</b></div>
       <div><span>Nombre</span><b class="inv-detalle-nombre">${esc(p.name || "—")}</b></div>
-      <div><span>Origen</span><b>Saldo spot en Pionex</b></div>
-      <div><span>Costo</span><b>No disponible por API</b></div>
+      <div><span>Costo prom.</span><b>${p.avgCost == null ? "—" : privacyOn() ? "••••" : fmtPrice(p.avgCost)}</b></div>
+      <div><span>Costo total</span><b>${p.cost > 0 ? money(p.cost) : "—"}</b></div>
+      <div><span>No realizado</span><b class="${signo(p.unrealized)}">${p.cost > 0 ? `${money(p.unrealized)} (${fmtPct(p.unrealizedPct)})` : "—"}</b></div>
+      <div><span>Realizado</span><b class="${signo(p.realized)}">${p.nTx ? money(p.realized) : "—"}</b></div>
+      <div><span>Órdenes spot</span><b>${p.nTx || "—"}</b></div>
+      <div class="inv-detalle-acciones">
+        <button class="btn-small" data-action="inv-token" data-sym="${esc(p.symbol)}">Precio / fuente</button>
+      </div>
+      ${p.parcial ? `<div class="inv-detalle-aviso">El saldo no coincide con las órdenes de compra: parte puede venir de un bot o de una transferencia, así que el costo es aproximado.</div>` : ""}
+      ${p.nTx ? "" : `<div class="inv-detalle-aviso">Sin órdenes de compra en Pionex para esta moneda: no hay costo que calcular.</div>`}
     </div>` : abierto ? `
     <div class="inv-detalle">
       <div><span>Cantidad</span><b>${fmtQty(p.qty)}</b></div>
@@ -872,7 +895,7 @@ function filaPosicion(p, valorTotal) {
       </div>
       <div class="inv-pos-num">
         <span class="inv-val">${money(p.value)}</span>
-        <span class="inv-pnl ${signo(p.unrealized)}">${p.price == null ? "sin precio" : p.pionex ? "" : fmtPct(p.unrealizedPct)}</span>
+        <span class="inv-pnl ${signo(p.unrealized)}">${p.price == null ? "sin precio" : p.unrealizedPct == null ? "" : fmtPct(p.unrealizedPct)}</span>
       </div>
     </div>
     ${detalle}

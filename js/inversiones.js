@@ -787,15 +787,13 @@ function filaBot(b) {
                d == null ? "" : `${d} d`].filter(Boolean).join(" · ");
 
   const celda = (label, v, cls) => `<div class="${cls || ""}"><span>${label}</span><b class="${signo(v)}">${money(v)}</b></div>`;
-  // Desglose del capital: solo si hubo aportes después de crear el bot o ganancia
-  // reinvertida. Si no, "Inversión" ya cuenta toda la historia.
-  const hayMovs = b.capInicial != null && (Math.abs(b.capAgregado) > 0.01 || b.reinvertido > 0.01);
-  const capital = !hayMovs ? "" :
-    `<div><span>Capital inicial</span><b>${money(b.capInicial)}</b></div>` +
-    (Math.abs(b.capAgregado) <= 0.01 ? "" :
-      `<div><span>${b.capAgregado > 0 ? "Agregado después" : "Sacado después"}</span><b>${money(Math.abs(b.capAgregado))}</b></div>`) +
-    (b.reinvertido <= 0.01 ? "" :
-      `<div><span>Ganancia reinvertida</span><b>${money(b.reinvertido)}</b></div>`);
+  // Desglose del capital. Las tres celdas van siempre, con "—" cuando no hay nada:
+  // así cada dato queda en el mismo lugar en todos los bots.
+  const opc = (v) => (Math.abs(v) > 0.01 ? Math.abs(v) : null);
+  const capital = b.capInicial == null ? "" :
+    `<div><span>Capital inicial</span><b>${money(b.capInicial)}</b></div>
+     <div><span>${b.capAgregado < -0.01 ? "Sacado después" : "Agregado después"}</span><b>${money(opc(b.capAgregado))}</b></div>
+     <div><span>Ganancia reinvertida</span><b>${money(opc(b.reinvertido))}</b></div>`;
 
   const detalle = abierto ? `
     <div class="inv-detalle">
@@ -824,7 +822,7 @@ function filaBot(b) {
         <span class="inv-name">${esc(sub)}</span>
       </div>
       <div class="inv-cambios inv-bot-pnls">
-        ${celda("PnL total", b.pnlTotal)}${celda("PnL actual", b.pnlActual)}
+        ${celda("Total", b.pnlTotal)}${celda("Actual", b.pnlActual)}${celda("Grilla", b.profitGrilla)}
       </div>
       <div class="inv-pos-num">
         <span class="inv-val">${money(b.valor)}</span>

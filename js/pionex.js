@@ -108,6 +108,34 @@ function precioPar(base, quote, perp) {
   return b != null && q ? b / q : null;
 }
 
+// Costo de un saldo spot, reconstruido con las órdenes de la cuenta (promedio móvil,
+// igual que el portafolio de CoinMarketCap). La comisión se cobra en la moneda comprada,
+// así que se descuenta de lo recibido: verificado contra el saldo real de la cuenta.
+export function costoDe(coin) {
+  const ord = PX.data?.ordenes?.[`${coin}_USDT`];
+  if (!ord?.length) return null;
+  const cron = [...ord].sort((a, b) => z(a.createTime) - z(b.createTime));
+  let qty = 0, cost = 0, realized = 0, buyQty = 0, buyCost = 0;
+  for (const o of cron) {
+    const size = z(o.filledSize), monto = z(o.filledAmount);
+    if (size <= 0) continue;
+    const feeBase = o.feeCoin === coin ? z(o.fee) : 0;
+    const feeQuote = o.feeCoin && o.feeCoin !== coin ? z(o.fee) : 0;
+    if (o.side === "BUY") {
+      const recibido = size - feeBase;
+      qty += recibido; cost += monto + feeQuote;
+      buyQty += recibido; buyCost += monto + feeQuote;
+    } else {
+      const avg = qty > 1e-12 ? cost / qty : 0;
+      const usado = Math.min(size, Math.max(qty, 0));
+      realized += monto - feeQuote - avg * usado;
+      qty -= size; cost -= avg * usado;
+    }
+  }
+  const avg = qty > 1e-9 ? cost / qty : buyQty > 0 ? buyCost / buyQty : null;
+  return { qty, cost, realized, avg, nOrdenes: cron.length };
+}
+
 export function saldos() {
   return (PX.data?.balances || [])
     .map((b) => ({ coin: b.coin, qty: z(b.free) + z(b.frozen) }))

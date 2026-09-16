@@ -777,13 +777,14 @@ function filaBot(b) {
     <div class="inv-detalle">
       <div><span>Inversión</span><b>${money(b.inversion)}</b></div>
       <div><span>Retirado</span><b>${money(b.retirado)}</b></div>
-      ${celda("Profit de grilla", b.profitGrilla)}
+      <div><span>Profit de grilla</span><b class="${signo(b.profitGrilla)}">${money(b.profitGrilla)}${
+        b.profitGrillaDentro == null ? "" : ` <small>(${money(b.profitGrillaDentro)} dentro)</small>`}</b></div>
       <div><span>Precio actual</span><b>${fmtPrice(b.precio)}</b></div>
       ${b.tipo === "futures" ? `
         <div><span>Posición</span><b>${fmtQty(b.posicion)} @ ${fmtPrice(b.precioEntrada)}</b></div>
         ${celda("No realizado", b.flotante)}
         ${celda("Funding", b.funding)}
-        ${celda("PnL total según Pionex", b.pnlPionex)}
+        ${celda("PnL total por caja", b.pnlCaja)}
         <div><span>Liquidación</span><b>${fmtPrice(b.liquidacion)}</b></div>` : ""}
       <div><span>Rango</span><b>${fmtPrice(b.bottom)} – ${fmtPrice(b.top)}</b></div>
       <div><span>Grillas</span><b>${b.grillas ?? "—"}</b></div>

@@ -212,6 +212,14 @@ export function normalizarBot(raw, cerrado) {
     // Capital neto para el cálculo por caja: descuenta la ganancia que se movió a inversión.
     const capital = (z(d.quoteInvestment) - z(d.profitExited) + z(d.extraMargin)) * qUsd;
     const pionex = n(d.totalRealizedProfit);
+    // De dónde salió ese capital: lo puesto al crear el bot vs lo agregado después.
+    // `profitExited` (ganancia movida a la inversión) queda aparte: infla quoteInvestment
+    // pero no es plata tuya. Cuadre verificado contra la cuenta real (2026-09-16):
+    // marginBalance ≈ capital + totalRealizedProfit + funding − retirado, con residuo ≈ totalFee.
+    bot.capital = capital;
+    bot.capInicial = (n(d.initQuoteInvestment) ?? z(d.initUsdtInvestment)) * qUsd;
+    bot.capAgregado = capital - bot.capInicial;     // negativo si sacaste capital
+    bot.reinvertido = z(d.profitExited) * qUsd;
 
     if (!cerrado) {
       // Supuesto: todos los bots reales son long con position positiva; en short se fuerza negativa.

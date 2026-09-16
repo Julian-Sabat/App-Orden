@@ -14,6 +14,7 @@
 
 import * as DB from "./db.js";
 import * as PXM from "./pionex.js";
+import { exportarInversiones } from "./inv_export.js";
 
 export const INV = {
   transactions: [],
@@ -633,6 +634,19 @@ function signo(v) {
   return v == null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "";
 }
 
+// Importar y exportar son acciones esporádicas: van al final, chicas, sin competir con
+// las posiciones. Exportar siempre cubre el portafolio completo, no el grupo filtrado.
+function accionesInv(conImportar) {
+  const importar = conImportar
+    ? `<button class="btn-small inv-importar" data-action="inv-importar">⬆ Importar CSV de CoinMarketCap</button>
+       <input type="file" id="inv-file" accept=".csv,text/csv" multiple hidden />`
+    : "";
+  return `<div class="inv-acciones">
+      <button class="btn-small inv-importar" data-action="inv-exportar">⬇ Descargar Excel</button>
+      ${importar}
+    </div>`;
+}
+
 function vistaResumen(r) {
   if (r.pionex) return vistaPionex(r);
   const frescura = INV.pricesAt
@@ -694,12 +708,7 @@ function vistaResumen(r) {
       </div>
     </button>` : "";
 
-  // Importar es una acción esporádica: va al final, chica, no compitiendo con las posiciones.
-  const acciones = `
-    <div class="inv-acciones">
-      <button class="btn-small inv-importar" data-action="inv-importar">⬆ Importar CSV de CoinMarketCap</button>
-      <input type="file" id="inv-file" accept=".csv,text/csv" multiple hidden />
-    </div>`;
+  const acciones = accionesInv(true);
 
   const cerradasHtml = cerradas.length
     ? `<button class="inv-cerradas-head" data-action="inv-toggle-cerradas" aria-expanded="${INV.cerradasAbierto}">
@@ -775,7 +784,8 @@ function vistaPionex(r) {
 
   return chipsGrupo() + hero + pnl +
     `<h2 class="section-title">Bots activos (${b.activos.length})</h2>` + activos +
-    `<h2 class="section-title">Saldo spot (${r.pos.length})</h2>` + saldos + cerrados;
+    `<h2 class="section-title">Saldo spot (${r.pos.length})</h2>` + saldos + cerrados +
+    accionesInv(false);
 }
 
 function filaBot(b) {
@@ -924,9 +934,9 @@ function vistaHistorial(r) {
   </div>`;
 
   if (INV.filterPortfolio === PIONEX) {
-    return chipsGrupo() + `<div class="empty">Pionex se lee en vivo desde su API: muestra saldos y bots, no un historial de movimientos.</div>`;
+    return chipsGrupo() + `<div class="empty">Pionex se lee en vivo desde su API: muestra saldos y bots, no un historial de movimientos. Sus órdenes spot sí van en el Excel.</div>` + accionesInv(false);
   }
-  if (!tx.length) return chipsGrupo() + chips + `<div class="empty">Sin movimientos.</div>`;
+  if (!tx.length) return chipsGrupo() + chips + `<div class="empty">Sin movimientos.</div>` + accionesInv(false);
 
   const filas = tx.map((t) => {
     const total = t.total_value == null ? null : Number(t.total_value);
@@ -949,7 +959,7 @@ function vistaHistorial(r) {
     </article>`;
   }).join("");
 
-  return chipsGrupo() + chips + `<div class="inv-tx-list">${filas}</div>`;
+  return chipsGrupo() + chips + `<div class="inv-tx-list">${filas}</div>` + accionesInv(false);
 }
 
 // ---------- Modales ----------
@@ -1118,6 +1128,18 @@ export async function handleAction(a, el) {
   if (a === "inv-trade") { ctx.openModal(modalTrade()); return true; }
 
   if (a === "inv-token") { ctx.openModal(modalToken(el.dataset.sym)); return true; }
+
+  if (a === "inv-exportar") {
+    try {
+      // Sin await antes de generar: en iOS la hoja de compartir solo se abre si sale
+      // dentro del mismo gesto del usuario.
+      const res = exportarInversiones();
+      ctx.showToast(res.via === "compartido" ? `✓ ${res.nombre} listo para compartir` : `✓ ${res.nombre}`);
+    } catch (e) {
+      ctx.showToast("⚠️ No se pudo generar el Excel: " + e.message);
+    }
+    return true;
+  }
 
   if (a === "inv-importar") {
     const input = document.getElementById("inv-file");

@@ -204,7 +204,7 @@ export function normalizarBot(raw, cerrado) {
     bot.bono = d.investmentFrom === "FUTURE_GRID_BONUS";
     if (bot.profitGrilla == null) bot.profitGrilla = z(d.profitReduce) * qUsd;
     // El profit de grilla del campo es bruto. La app de Pionex muestra solo la parte que
-    // sigue adentro: bruto − retirado − reinvertido (verificado: 34,64 − 21,50 − 11,95 = 1,19).
+    // sigue adentro: bruto − retirado − reinvertido (verificado contra la app).
     bot.profitGrillaDentro = bot.profitGrilla == null ? null
       : bot.profitGrilla - bot.retirado - z(d.profitReinvest) * qUsd;
     // Inversión como la muestra la app (incluye lo reinvertido y el margen agregado).

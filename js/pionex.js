@@ -256,9 +256,13 @@ export function normalizarBot(raw, cerrado) {
       bot.pnlActual = bot.pnlTotal == null ? null : bot.pnlTotal - bot.retirado;
     } else {
       if (bot.bono) {
-        // Bot con bono de Pionex: el capital no era tuyo, lo que volvió no sirve para medir.
-        bot.pnlTotal = pionex == null ? null
-                     : (pionex - z(d.bonusFee)) * qUsd + bot.funding + bot.comisiones;
+        // Bot con bono de Pionex: el capital era de ellos y vuelve a ellos. Tu resultado es
+        // lo que te queda POR ENCIMA del bono, y si el bot pierde no ponés plata de tu
+        // bolsillo: el piso es 0, no un rojo. `unlockUsdtAmount` es justo ese excedente
+        // (ETH: 67,61 = marginBalance − 500, ya neto de `bonusFee`) y llega nulo cuando no
+        // sobró nada (XRP: marginBalance 179,93 < 200 de bono → no te devolvieron nada).
+        const tuyo = n(d.unlockUsdtAmount);
+        bot.pnlTotal = Math.max(0, (tuyo != null ? tuyo : z(d.marginBalance) - capital) * qUsd);
         bot.inversion = 0;
       } else {
         // Lo que volvió a la cuenta + lo retirado antes − el capital puesto.

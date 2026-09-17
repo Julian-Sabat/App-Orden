@@ -8,12 +8,19 @@
 //     ganancias de la grilla, porque esa plata ya no está dentro del bot.
 //   - PnL total: el actual + todo lo retirado. Retirar no lo mueve.
 //
-// Fórmulas validadas contra la respuesta real de la cuenta (2026-09-15), no solo la doc:
-// la API trae campos no documentados (totalRealizedProfit, profitExited, gridProfit en
-// futuros) y `quoteInvestment` crece al reinvertir ganancias. En futuros, el cálculo por
-// caja de abajo coincide con el propio de Pionex (totalRealizedProfit + funding + no
-// realizado) con 1-2 USD de diferencia, que son comisiones. Ver "Supuesto" para lo que
-// no se pudo contrastar (spot grid: no hay bots activos para comparar).
+// Fórmulas validadas contra la respuesta real de la cuenta (2026-09-15 y 2026-09-17), no
+// solo la doc: la API trae campos no documentados (totalRealizedProfit, profitExited,
+// gridProfit en futuros) y `quoteInvestment` crece al reinvertir ganancias.
+//
+// En futuros vale esta identidad, exacta al quinto decimal en los 9 bots cerrados con
+// actividad de la cuenta (contra `unlockUsdtAmount`, la plata que volvió de verdad):
+//   PnL realizado = totalRealizedProfit + totalFundingFee + totalFee
+// Ojo con los dos campos de funding: `totalFundingFee` es el neto y `fundingFeePayment`
+// solo lo pagado (usarlo, y omitir `totalFee`, inflaba el PnL 0,4-2,7 USD por bot).
+//
+// La inversión es tu plata (capital inicial + agregado + margen extra), NO el
+// `quoteInvestment` que muestra Pionex: ese incluye la ganancia reinvertida y hunde el %.
+// Ver "Supuesto" para lo que no se pudo contrastar (spot grid: no hay bots activos).
 
 import * as DB from "./db.js";
 
@@ -199,7 +206,10 @@ export function normalizarBot(raw, cerrado) {
     // hacia abajo en un grid long y hacia arriba en uno short.
     bot.liquidacion = n(d.liquidationPrice) ||
       (d.trend === "short" ? n(d.estimateLiquidationPriceUp) : n(d.estimateLiquidationPriceDown)) || null;
-    bot.funding = z(d.fundingFeePayment) * qUsd;          // viene negativo
+    // `totalFundingFee` es el funding NETO (pagado − cobrado); `fundingFeePayment` es solo
+    // lo pagado y sobreestima el costo. `totalFee` son las comisiones, ya cobradas.
+    bot.funding = z(d.totalFundingFee) * qUsd;
+    bot.comisiones = z(d.totalFee) * qUsd;                // viene negativo
     bot.retirado = z(d.profitWithdrawn) * qUsd;
     bot.bono = d.investmentFrom === "FUTURE_GRID_BONUS";
     if (bot.profitGrilla == null) bot.profitGrilla = z(d.profitReduce) * qUsd;
@@ -207,15 +217,18 @@ export function normalizarBot(raw, cerrado) {
     // sigue adentro: bruto − retirado − reinvertido (verificado contra la app).
     bot.profitGrillaDentro = bot.profitGrilla == null ? null
       : bot.profitGrilla - bot.retirado - z(d.profitReinvest) * qUsd;
-    // Inversión como la muestra la app (incluye lo reinvertido y el margen agregado).
-    bot.inversion = z(d.quoteInvestment) * qUsd;
-    // Capital neto para el cálculo por caja: descuenta la ganancia que se movió a inversión.
+    // Inversión = tu plata (inicial + agregada después, con el margen extra), SIN la
+    // ganancia que Pionex movió a la inversión. Pionex muestra `quoteInvestment`, que sí
+    // la incluye: contra ese número el retorno sale subestimado (un ETH cerrado daba 30%
+    // en vez del 39% real sobre lo puesto). Es también la base del cálculo por caja.
     const capital = (z(d.quoteInvestment) - z(d.profitExited) + z(d.extraMargin)) * qUsd;
+    bot.inversion = capital;
     const pionex = n(d.totalRealizedProfit);
     // De dónde salió ese capital: lo puesto al crear el bot vs lo agregado después.
     // `profitExited` (ganancia movida a la inversión) queda aparte: infla quoteInvestment
-    // pero no es plata tuya. Cuadre verificado contra la cuenta real (2026-09-16):
-    // marginBalance ≈ capital + totalRealizedProfit + funding − retirado, con residuo ≈ totalFee.
+    // pero no es plata tuya. Cuadre verificado contra la cuenta real (2026-09-17):
+    // marginBalance = capital + totalRealizedProfit + totalFundingFee + totalFee − retirado,
+    // exacto al quinto decimal en los 9 bots cerrados con actividad.
     bot.capital = capital;
     bot.capInicial = (n(d.initQuoteInvestment) ?? z(d.initUsdtInvestment)) * qUsd;
     bot.capAgregado = capital - bot.capInicial;     // negativo si sacaste capital
@@ -232,25 +245,26 @@ export function normalizarBot(raw, cerrado) {
       bot.flotante = flotante;
       // Valor hoy = margen (caja del bot, ya descuenta lo retirado) + PnL no realizado.
       bot.valor = flotante == null ? null : z(d.marginBalance) * qUsd + flotante;
-      // PnL total = el mismo número que la app de Pionex muestra como "ganancia total"
-      // (verificado contra la app). Ni retirar ni reinvertir lo bajan: Pionex mueve esa
-      // ganancia a la inversión, pero la sigue contando acá.
+      // PnL total = realizado + no realizado. `totalRealizedProfit` viene bruto: el funding
+      // y las comisiones hay que restarlos a mano. Ni retirar ni reinvertir lo bajan.
+      // Da lo mismo que el cálculo por caja, que queda como contraste independiente.
       const porCaja = flotante == null ? null : bot.valor + bot.retirado - capital;
       bot.pnlCaja = porCaja;
       bot.pnlTotal = pionex == null || flotante == null ? porCaja
-                   : pionex * qUsd + bot.funding + flotante;
+                   : pionex * qUsd + bot.funding + bot.comisiones + flotante;
       // Actual = lo que queda dentro del bot, sin lo ya retirado a la cuenta.
       bot.pnlActual = bot.pnlTotal == null ? null : bot.pnlTotal - bot.retirado;
     } else {
       if (bot.bono) {
         // Bot con bono de Pionex: el capital no era tuyo, lo que volvió no sirve para medir.
-        bot.pnlTotal = pionex == null ? null : (pionex - z(d.bonusFee)) * qUsd + bot.funding;
+        bot.pnlTotal = pionex == null ? null
+                     : (pionex - z(d.bonusFee)) * qUsd + bot.funding + bot.comisiones;
         bot.inversion = 0;
       } else {
         // Lo que volvió a la cuenta + lo retirado antes − el capital puesto.
         const salio = n(d.unlockUsdtAmount) ?? n(d.marginBalance);
         bot.pnlTotal = salio != null ? salio * qUsd + bot.retirado - capital
-                     : pionex == null ? null : pionex * qUsd + bot.funding;
+                     : pionex == null ? null : pionex * qUsd + bot.funding + bot.comisiones;
       }
       bot.pnlActual = null;
       bot.valor = 0;

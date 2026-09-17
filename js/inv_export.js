@@ -108,7 +108,7 @@ const COLS_ESTADO = [
   "Costo", "Costo prom.", "PnL no realizado", "% no realizado", "PnL realizado", "PnL total",
   "1d", "7d", "30d", "Movimientos",
   "Capital inicial", "Agregado después", "Ganancia reinvertida", "Profit de grilla",
-  "Retirado", "Funding", "Precio de entrada", "Liquidación", "Rango", "Grillas", "Creado",
+  "Retirado", "Funding", "Comisiones", "Precio de entrada", "Liquidación", "Rango", "Grillas", "Creado",
 ];
 
 function filaToken(grupo, p, total) {
@@ -138,7 +138,7 @@ function filaBot(grupo, b, total) {
     usd(b.pnlActual), pct(b.pnlActualPct), usd(b.retirado), usd(b.pnlTotal),
     null, null, null, null,
     usd(b.capInicial), usd(b.capAgregado), usd(b.reinvertido), usd(b.profitGrilla),
-    usd(b.retirado), usd(b.funding), num(b.precioEntrada, "precio"), num(b.liquidacion, "precio"),
+    usd(b.retirado), usd(b.funding), usd(b.comisiones), num(b.precioEntrada, "precio"), num(b.liquidacion, "precio"),
     rango, num(b.grillas, "entero"), fecha(b.creado),
   ];
 }
@@ -163,7 +163,7 @@ function hojaEstado() {
   }
 
   const cols = [16, 8, 12, 26, 14, 13, 13, 9, 13, 13, 16, 14, 14, 13, 9, 9, 9, 12,
-                14, 16, 18, 15, 13, 12, 15, 13, 22, 9, 17];
+                14, 16, 18, 15, 13, 12, 13, 15, 13, 22, 9, 17];
   return { name: "Estado actual", cols, rows, header: true };
 }
 

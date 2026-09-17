@@ -817,6 +817,7 @@ function filaBot(b) {
         <div><span>Posición</span><b>${fmtQty(b.posicion)} @ ${fmtPrice(b.precioEntrada)}</b></div>
         ${celda("No realizado", b.flotante)}
         ${celda("Funding", b.funding)}
+        ${celda("Comisiones", b.comisiones)}
         ${celda("PnL total por caja", b.pnlCaja)}
         <div><span>Liquidación</span><b>${fmtPrice(b.liquidacion)}</b></div>` : ""}
       <div><span>Rango</span><b>${fmtPrice(b.bottom)} – ${fmtPrice(b.top)}</b></div>

@@ -41,6 +41,7 @@ export function init(context) {
 const EPS = 1e-8;
 const PRIV_KEY = "orden_inv_privacy";
 const PRICE_CACHE_KEY = "orden_inv_precios";
+const PRICE30_CACHE_KEY = "orden_inv_precios_30d";
 const PRICE_TTL_MS = 5 * 60 * 1000;
 const CP = "https://api.coinpaprika.com/v1";
 const CG = "https://api.coingecko.com/api/v3";
@@ -355,7 +356,7 @@ async function resolverId(symbol) {
 
 // CoinPaprika: precio y cambios 24h/7d de las ~2000 monedas top en una sola llamada,
 // sin key. Su plan gratis devuelve percent_change_30d en 0 para todas (verificado el
-// 2026-09-29), así que el 30d no se toma de acá: lo aporta CoinGecko cuando responde.
+// 2026-09-29), así que el 30d se calcula aparte con su histórico diario (cambio30dPaprika).
 async function preciosPaprika(pend) {
   const r = await fetch(`${CP}/tickers?quotes=USD`);
   if (!r.ok) throw new Error(`CoinPaprika respondió ${r.status}`);
@@ -366,23 +367,62 @@ async function preciosPaprika(pend) {
     if (!porSym.has(s)) porSym.set(s, []);
     porSym.get(s).push(c);
   }
-  for (const x of pend) {
-    const q = elegirPaprika(porSym.get(x.sym.toUpperCase()), x)?.quotes?.USD;
-    if (!q || q.price == null) continue;
-    INV.prices[x.sym] = {
-      usd: q.price,
-      change24h: q.percent_change_24h ?? null,
-      change7d: q.percent_change_7d ?? null,
-      change30d: null,
-    };
-    x.ok = true;
+  for (const x of pend) ponerPrecioPaprika(x, elegirPaprika(porSym.get(x.sym.toUpperCase()), x));
+
+  // /tickers solo trae las ~2000 primeras por market cap; las más chicas (ALVA está ~3950)
+  // se buscan una a una: /search da los candidatos y /tickers/{id} el precio.
+  for (const x of pend.filter((x) => !x.ok)) {
+    const s = await fetch(`${CP}/search?q=${encodeURIComponent(x.sym)}&c=currencies&limit=10`);
+    if (!s.ok) break;   // rate limit: no seguir martillando
+    const cands = ((await s.json()).currencies || [])
+      .filter((c) => c.is_active && (c.symbol || "").toUpperCase() === x.sym.toUpperCase());
+    const c = elegirPaprika(cands, x);
+    if (!c) continue;
+    const t = await fetch(`${CP}/tickers/${encodeURIComponent(c.id)}?quotes=USD`);
+    if (t.ok) ponerPrecioPaprika(x, await t.json());
   }
+}
+
+function ponerPrecioPaprika(x, c) {
+  const q = c?.quotes?.USD;
+  if (!q || q.price == null) return;
+  INV.prices[x.sym] = {
+    usd: q.price,
+    change24h: q.percent_change_24h ?? null,
+    change7d: q.percent_change_7d ?? null,
+    change30d: null,
+  };
+  x.ok = true;
+  x.pid = c.id;
+}
+
+// Cambio 30d = precio actual contra el cierre diario de Paprika de hace 30 días
+// (/tickers/{id}/historical, que sí está en el plan gratis). Ese precio viejo solo cambia
+// una vez al día, así que se guarda en el dispositivo y se pide una vez por token por día.
+async function cambio30dPaprika(pend) {
+  const fecha = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  let cache = {};
+  try { cache = JSON.parse(localStorage.getItem(PRICE30_CACHE_KEY) || "{}"); } catch (e) { /* se repuebla */ }
+  if (cache.fecha !== fecha) cache = { fecha, precios: {} };
+  for (const x of pend.filter((x) => x.pid)) {
+    if (!(x.pid in cache.precios)) {
+      const r = await fetch(`${CP}/tickers/${encodeURIComponent(x.pid)}/historical?start=${fecha}&interval=1d&limit=1`);
+      if (!r.ok) break;   // rate limit: no seguir martillando
+      const arr = await r.json();
+      cache.precios[x.pid] = (Array.isArray(arr) && arr[0]?.price) || null;   // null = sin histórico
+    }
+    const viejo = cache.precios[x.pid];
+    if (viejo) INV.prices[x.sym].change30d = (INV.prices[x.sym].usd / viejo - 1) * 100;
+  }
+  try { localStorage.setItem(PRICE30_CACHE_KEY, JSON.stringify(cache)); } catch (e) { /* no es crítico */ }
 }
 
 // Entre las monedas de CoinPaprika con el mismo símbolo. Si el token ya está identificado
 // en CoinGecko, solo se acepta la que calce con ese id o ese nombre (los ids de Paprika son
 // "símbolo-nombre", p. ej. cc-canton-network ↔ canton-network): un símbolo repetido no debe
-// colar el precio de otra moneda. Sin identificar, la de mejor rank, igual que resolverId.
+// colar el precio de otra moneda. El nombre puede venir más largo en uno de los dos
+// ("Alvara Protocol" en CoinGecko, "Alvara" en Paprika), así que basta con que uno empiece
+// por el otro. Sin identificar, la de mejor rank, igual que resolverId.
 function elegirPaprika(cands, x) {
   if (!cands || !cands.length) return null;
   const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -390,13 +430,16 @@ function elegirPaprika(cands, x) {
     const porId = cands.find((c) => c.id === `${x.sym.toLowerCase()}-${x.id}`);
     if (porId) return porId;
     const nombre = norm(x.name);
-    return (nombre && cands.find((c) => norm(c.name) === nombre)) || null;
+    if (!nombre) return null;
+    const calza = (n) => n && nombre && Math.min(n.length, nombre.length) >= 4 &&
+                         (n.startsWith(nombre) || nombre.startsWith(n));
+    return cands.find((c) => norm(c.name) === nombre) || cands.find((c) => calza(norm(c.name))) || null;
   }
   return [...cands].sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9))[0];
 }
 
-// CoinGecko: respaldo para lo que Paprika no tiene, y fuente del cambio 30d. En sept-2026
-// empezó a bloquear por IP las rutas de precios sin key (403 de CloudFront sin CORS, que el
+// CoinGecko: respaldo para lo que Paprika no tiene, y para el 30d que Paprika no pudo dar.
+// En sept-2026 empezó a bloquear por IP las rutas de precios sin key (403 de CloudFront sin CORS, que el
 // navegador reporta como "Failed to fetch"), así que su falla no es fatal si Paprika respondió.
 async function preciosCoinGecko(pend) {
   // 1) resolver los símbolos que todavía no tienen id (una vez por símbolo)
@@ -428,7 +471,7 @@ async function preciosCoinGecko(pend) {
     // Al pedir price_change_percentage, los campos llegan con sufijo _in_currency;
     // el de 24h existe además sin sufijo, y sirve de respaldo.
     const cambio30d = c.price_change_percentage_30d_in_currency ?? null;
-    if (x.ok) { INV.prices[x.sym].change30d = cambio30d; continue; }   // Paprika manda en el precio
+    if (x.ok) { INV.prices[x.sym].change30d ??= cambio30d; continue; }   // Paprika manda si ya lo dio
     INV.prices[x.sym] = {
       usd: c.current_price,
       change24h: c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h ?? null,
@@ -460,6 +503,7 @@ export async function refreshPrices(silencioso) {
 
   const errores = [];
   try { await preciosPaprika(pend); } catch (e) { errores.push(`CoinPaprika: ${e.message}`); }
+  try { await cambio30dPaprika(pend); } catch (e) { /* sin 30d no es error: queda "—" */ }
   try { await preciosCoinGecko(pend); } catch (e) { errores.push(`CoinGecko: ${e.message}`); }
 
   if (pend.some((x) => x.ok)) {

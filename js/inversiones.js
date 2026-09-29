@@ -2,7 +2,7 @@
 //
 // La data del portafolio NO pasa por ningún intermediario: el CSV exportado de
 // CoinMarketCap se parsea en este archivo (en el dispositivo) y va directo a
-// Supabase; los precios se piden desde acá a la API pública de CoinGecko.
+// Supabase; los precios se piden desde acá a CoinPaprika, con CoinGecko de respaldo.
 //
 // Base de costo: promedio móvil. Cada venta descuenta costo al promedio vigente,
 // así realizado + no realizado = PnL real. Ojo al comparar con CoinMarketCap:
@@ -42,6 +42,7 @@ const EPS = 1e-8;
 const PRIV_KEY = "orden_inv_privacy";
 const PRICE_CACHE_KEY = "orden_inv_precios";
 const PRICE_TTL_MS = 5 * 60 * 1000;
+const CP = "https://api.coinpaprika.com/v1";
 const CG = "https://api.coingecko.com/api/v3";
 
 // ---------- Utilidades ----------
@@ -311,7 +312,7 @@ export function resumen(pf) {
            neto: valor - debt, filtrado: !!pf, px };
 }
 
-// ---------- Precios (CoinGecko, desde el dispositivo) ----------
+// ---------- Precios (CoinPaprika + CoinGecko, desde el dispositivo) ----------
 
 function priceOf(symbol) {
   const tk = INV.tokens.find((t) => t.symbol === symbol);
@@ -352,70 +353,125 @@ async function resolverId(symbol) {
   return { id: cands[0].id, name: cands[0].name };
 }
 
-export async function refreshPrices(silencioso) {
-  const abiertas = positions().filter((p) => p.abierta && !p.hidden);   // todos los grupos
-  const pend = [];
-  for (const p of abiertas) {
-    const tk = INV.tokens.find((t) => t.symbol === p.symbol);
-    if (tk && tk.manual_price != null) continue;          // precio fijado a mano
-    if (tk && tk.coingecko_id) { pend.push({ sym: p.symbol, id: tk.coingecko_id }); continue; }
-    pend.push({ sym: p.symbol, id: null, name: p.name });
+// CoinPaprika: precio y cambios 24h/7d de las ~2000 monedas top en una sola llamada,
+// sin key. Su plan gratis devuelve percent_change_30d en 0 para todas (verificado el
+// 2026-09-29), así que el 30d no se toma de acá: lo aporta CoinGecko cuando responde.
+async function preciosPaprika(pend) {
+  const r = await fetch(`${CP}/tickers?quotes=USD`);
+  if (!r.ok) throw new Error(`CoinPaprika respondió ${r.status}`);
+  const arr = await r.json();
+  const porSym = new Map();
+  for (const c of Array.isArray(arr) ? arr : []) {
+    const s = (c.symbol || "").toUpperCase();
+    if (!porSym.has(s)) porSym.set(s, []);
+    porSym.get(s).push(c);
   }
-  // Saldos de Pionex: el precio ya viene del exchange, pero CoinGecko aporta los
-  // cambios 30d/7d/1d de la fila. Solo los que valen algo, para no gastar /search en polvo.
-  const yaEsta = new Set(pend.map((x) => x.sym));
-  for (const p of positionsPionex()) {
-    if (yaEsta.has(p.symbol)) continue;
-    const tk = INV.tokens.find((t) => t.symbol === p.symbol);
-    if (tk && tk.manual_price != null) continue;
-    pend.push({ sym: p.symbol, id: tk?.coingecko_id || null, name: p.name });
+  for (const x of pend) {
+    const q = elegirPaprika(porSym.get(x.sym.toUpperCase()), x)?.quotes?.USD;
+    if (!q || q.price == null) continue;
+    INV.prices[x.sym] = {
+      usd: q.price,
+      change24h: q.percent_change_24h ?? null,
+      change7d: q.percent_change_7d ?? null,
+      change30d: null,
+    };
+    x.ok = true;
   }
+}
 
+// Entre las monedas de CoinPaprika con el mismo símbolo. Si el token ya está identificado
+// en CoinGecko, solo se acepta la que calce con ese id o ese nombre (los ids de Paprika son
+// "símbolo-nombre", p. ej. cc-canton-network ↔ canton-network): un símbolo repetido no debe
+// colar el precio de otra moneda. Sin identificar, la de mejor rank, igual que resolverId.
+function elegirPaprika(cands, x) {
+  if (!cands || !cands.length) return null;
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (x.id) {
+    const porId = cands.find((c) => c.id === `${x.sym.toLowerCase()}-${x.id}`);
+    if (porId) return porId;
+    const nombre = norm(x.name);
+    return (nombre && cands.find((c) => norm(c.name) === nombre)) || null;
+  }
+  return [...cands].sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9))[0];
+}
+
+// CoinGecko: respaldo para lo que Paprika no tiene, y fuente del cambio 30d. En sept-2026
+// empezó a bloquear por IP las rutas de precios sin key (403 de CloudFront sin CORS, que el
+// navegador reporta como "Failed to fetch"), así que su falla no es fatal si Paprika respondió.
+async function preciosCoinGecko(pend) {
   // 1) resolver los símbolos que todavía no tienen id (una vez por símbolo)
-  const sinResolver = pend.filter((x) => !x.id);
-  for (const x of sinResolver) {
-    try {
-      const hit = await resolverId(x.sym);
-      if (hit) {
-        x.id = hit.id;
-        await guardarToken(x.sym, { coingecko_id: hit.id, name: hit.name });
-      } else {
-        await guardarToken(x.sym, { coingecko_id: null });
-      }
-    } catch (e) {
-      if (!silencioso) ctx.showToast("⚠️ " + e.message);
-      break;   // rate limit o sin red: no seguir martillando
+  for (const x of pend.filter((x) => !x.id)) {
+    let hit;
+    try { hit = await resolverId(x.sym); } catch (e) { break; }   // rate limit o sin red: no seguir martillando
+    if (hit) {
+      x.id = hit.id;
+      await guardarToken(x.sym, { coingecko_id: hit.id, name: hit.name });
+    } else {
+      await guardarToken(x.sym, { coingecko_id: null });
     }
   }
 
   // 2) un solo request con todos los ids. /coins/markets en vez de /simple/price
   // porque este trae los tres cambios (24h, 7d, 30d) sin pedir llamadas extra.
   const ids = [...new Set(pend.filter((x) => x.id).map((x) => x.id))];
-  if (!ids.length) { INV.pricesAt = Date.now(); writePriceCache(); return; }
-  try {
-    const url = `${CG}/coins/markets?vs_currency=usd&per_page=250` +
-                `&ids=${ids.map(encodeURIComponent).join(",")}` +
-                `&price_change_percentage=24h,7d,30d`;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`CoinGecko respondió ${r.status}`);
-    const arr = await r.json();
-    const porId = new Map((Array.isArray(arr) ? arr : []).map((c) => [c.id, c]));
-    for (const x of pend) {
-      const c = x.id ? porId.get(x.id) : null;
-      if (!c) continue;
-      // Al pedir price_change_percentage, los campos llegan con sufijo _in_currency;
-      // el de 24h existe además sin sufijo, y sirve de respaldo.
-      INV.prices[x.sym] = {
-        usd: c.current_price,
-        change24h: c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h ?? null,
-        change7d: c.price_change_percentage_7d_in_currency ?? null,
-        change30d: c.price_change_percentage_30d_in_currency ?? null,
-      };
-    }
+  if (!ids.length) return;
+  const url = `${CG}/coins/markets?vs_currency=usd&per_page=250` +
+              `&ids=${ids.map(encodeURIComponent).join(",")}` +
+              `&price_change_percentage=24h,7d,30d`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`CoinGecko respondió ${r.status}`);
+  const arr = await r.json();
+  const porId = new Map((Array.isArray(arr) ? arr : []).map((c) => [c.id, c]));
+  for (const x of pend) {
+    const c = x.id ? porId.get(x.id) : null;
+    if (!c) continue;
+    // Al pedir price_change_percentage, los campos llegan con sufijo _in_currency;
+    // el de 24h existe además sin sufijo, y sirve de respaldo.
+    const cambio30d = c.price_change_percentage_30d_in_currency ?? null;
+    if (x.ok) { INV.prices[x.sym].change30d = cambio30d; continue; }   // Paprika manda en el precio
+    INV.prices[x.sym] = {
+      usd: c.current_price,
+      change24h: c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h ?? null,
+      change7d: c.price_change_percentage_7d_in_currency ?? null,
+      change30d: cambio30d,
+    };
+    x.ok = true;
+  }
+}
+
+export async function refreshPrices(silencioso) {
+  const abiertas = positions().filter((p) => p.abierta && !p.hidden);   // todos los grupos
+  const pend = [];
+  for (const p of abiertas) {
+    const tk = INV.tokens.find((t) => t.symbol === p.symbol);
+    if (tk && tk.manual_price != null) continue;          // precio fijado a mano
+    pend.push({ sym: p.symbol, id: tk?.coingecko_id || null, name: tk?.name || p.name });
+  }
+  // Saldos de Pionex: el precio ya viene del exchange, pero Paprika/CoinGecko aportan los
+  // cambios 30d/7d/1d de la fila. Solo los que valen algo, para no gastar /search en polvo.
+  const yaEsta = new Set(pend.map((x) => x.sym));
+  for (const p of positionsPionex()) {
+    if (yaEsta.has(p.symbol)) continue;
+    const tk = INV.tokens.find((t) => t.symbol === p.symbol);
+    if (tk && tk.manual_price != null) continue;
+    pend.push({ sym: p.symbol, id: tk?.coingecko_id || null, name: tk?.name || p.name });
+  }
+  if (!pend.length) { INV.pricesAt = Date.now(); writePriceCache(); return; }
+
+  const errores = [];
+  try { await preciosPaprika(pend); } catch (e) { errores.push(`CoinPaprika: ${e.message}`); }
+  try { await preciosCoinGecko(pend); } catch (e) { errores.push(`CoinGecko: ${e.message}`); }
+
+  if (pend.some((x) => x.ok)) {
     INV.pricesAt = Date.now();
     writePriceCache();
-  } catch (e) {
-    if (!silencioso) ctx.showToast("⚠️ No se pudieron traer precios: " + e.message);
+  }
+  if (silencioso) return;
+  const sinPrecio = pend.filter((x) => !x.ok).map((x) => x.sym);
+  if (!pend.some((x) => x.ok)) {
+    ctx.showToast("⚠️ No se pudieron traer precios: " + errores.join(" · "));
+  } else if (sinPrecio.length) {
+    ctx.showToast(`⚠️ Sin precio para ${sinPrecio.join(", ")}` + (errores.length ? ` (${errores.join(" · ")})` : ""));
   }
 }
 
@@ -1048,7 +1104,7 @@ function modalToken(sym) {
       <label>ID en CoinGecko
         <input type="text" name="coingecko_id" value="${esc(tk.coingecko_id || "")}" placeholder="ej: nexo" /></label>
       <p class="hint">El id aparece en la URL de CoinGecko: coingecko.com/en/coins/<b>nexo</b>. Déjalo vacío si el token no está listado.</p>
-      <label>Precio manual USD (gana sobre CoinGecko)
+      <label>Precio manual USD (gana sobre el precio automático)
         <input type="number" name="manual_price" step="any" value="${tk.manual_price ?? ""}" placeholder="opcional" /></label>
       <label class="check-row"><input type="checkbox" name="hidden" ${tk.hidden ? "checked" : ""} /> Ocultar del portafolio</label>
       <div class="modal-actions">

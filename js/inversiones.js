@@ -903,7 +903,8 @@ function filaBot(b) {
   const capital = b.capInicial == null ? "" :
     `<div><span>Capital inicial</span><b>${money(b.capInicial)}</b></div>
      <div><span>${b.capAgregado < -0.01 ? "Sacado después" : "Agregado después"}</span><b>${money(opc(b.capAgregado))}</b></div>
-     <div><span>Ganancia reinvertida</span><b>${money(opc(b.reinvertido))}</b></div>`;
+     <div><span>Ganancia reinvertida</span><b>${money(opc(b.reinvertido + b.reinvertidoManual))}${
+       b.reinvertidoManual > 0.01 ? ` <small>(${money(b.reinvertidoManual)} a mano)</small>` : ""}</b></div>`;
 
   const detalle = abierto ? `
     <div class="inv-detalle">

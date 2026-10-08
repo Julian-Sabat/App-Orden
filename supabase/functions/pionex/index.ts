@@ -132,11 +132,20 @@ async function ordenesSpot(coins: string[], key: string, secret: string, errores
   return out;
 }
 
-function mapaTickers(data: any): Record<string, number> {
+// Algunos mercados no se llaman como la moneda que usan los bots y saldos: el bot de
+// Lighter trae base "LIGHTER.PERP" pero el ticker es "LIT_USDT_PERP" (verificado en
+// /common/symbols, que da baseCurrency "LIGHTER"). El precio se publica también con el
+// nombre que arma la app (BASE_QUOTE o BASE_QUOTE_PERP) para que lo encuentre igual.
+function mapaTickers(data: any, simbolos: any): Record<string, number> {
   const m: Record<string, number> = {};
   for (const t of data?.tickers ?? []) {
     const v = Number(t.close);
     if (t.symbol && isFinite(v)) m[t.symbol] = v;
+  }
+  for (const s of simbolos?.symbols ?? []) {
+    const base = String(s.baseCurrency ?? "").replace(/\.PERP$/i, "");
+    const alias = `${base}_${s.quoteCurrency}${s.type === "PERP" ? "_PERP" : ""}`;
+    if (base && m[s.symbol] != null && m[alias] == null) m[alias] = m[s.symbol];
   }
   return m;
 }
@@ -158,11 +167,13 @@ Deno.serve(async (req) => {
   const intento = <T>(p: Promise<T>, vacio: T) =>
     p.catch((e) => { errores.push(String(e?.message ?? e)); return vacio; });
 
-  const [bal, running, spot, perp] = await Promise.all([
+  const [bal, running, spot, perp, simSpot, simPerp] = await Promise.all([
     intento(getPrivado("/api/v1/account/balances", {}, key, secret), null),
     intento(bots("running", key, secret), [] as unknown[]),
     intento(getPublico("/api/v1/market/tickers"), null),
     intento(getPublico("/api/v1/market/tickers?type=PERP"), null),
+    intento(getPublico("/api/v1/common/symbols"), null),
+    intento(getPublico("/api/v1/common/symbols?type=PERP"), null),
   ]);
   // Cerrados después, en serie: pueden ser varias páginas y el límite es 10 req/s.
   const finished = await intento(bots("finished", key, secret), [] as unknown[]);
@@ -178,7 +189,7 @@ Deno.serve(async (req) => {
     balances,
     bots: { running, finished },
     ordenes,
-    tickers: { spot: mapaTickers(spot), perp: mapaTickers(perp) },
+    tickers: { spot: mapaTickers(spot, simSpot), perp: mapaTickers(perp, simPerp) },
     errores,
   });
 });

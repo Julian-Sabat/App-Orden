@@ -119,29 +119,41 @@ function precioPar(base, quote, perp) {
 // Costo de un saldo spot, reconstruido con las órdenes de la cuenta (promedio móvil,
 // igual que el portafolio de CoinMarketCap). La comisión se cobra en la moneda comprada,
 // así que se descuenta de lo recibido: verificado contra el saldo real de la cuenta.
-export function costoDe(coin) {
-  const ord = PX.data?.ordenes?.[`${coin}_USDT`];
-  if (!ord?.length) return null;
-  const cron = [...ord].sort((a, b) => z(a.createTime) - z(b.createTime));
+//
+// `extra` son operaciones cargadas a mano, ya normalizadas, que se mezclan en orden
+// cronológico con las de la API: `/trade/allOrders` solo devuelve las órdenes de la
+// pestaña "Limit & Market" de Pionex y una compra "Smart Market" no aparece por ningún
+// endpoint (2026-10-15: tampoco en `/trade/fills`, probado contra la cuenta). Sin eso, en
+// CAKE faltaban 47,234371 de los 115,073 del saldo y el promedio quedaba en el de la
+// compra anterior, extrapolado a todo el saldo.
+export function costoDe(coin, extra = []) {
+  const ord = PX.data?.ordenes?.[`${coin}_USDT`] || [];
+  const mov = [
+    ...ord.map((o) => ({
+      side: o.side, size: z(o.filledSize), monto: z(o.filledAmount), ts: z(o.createTime),
+      feeBase: o.feeCoin === coin ? z(o.fee) : 0,
+      feeQuote: o.feeCoin && o.feeCoin !== coin ? z(o.fee) : 0,
+    })),
+    ...extra,
+  ];
+  if (!mov.length) return null;
+  mov.sort((a, b) => a.ts - b.ts);
   let qty = 0, cost = 0, realized = 0, buyQty = 0, buyCost = 0;
-  for (const o of cron) {
-    const size = z(o.filledSize), monto = z(o.filledAmount);
-    if (size <= 0) continue;
-    const feeBase = o.feeCoin === coin ? z(o.fee) : 0;
-    const feeQuote = o.feeCoin && o.feeCoin !== coin ? z(o.fee) : 0;
-    if (o.side === "BUY") {
-      const recibido = size - feeBase;
-      qty += recibido; cost += monto + feeQuote;
-      buyQty += recibido; buyCost += monto + feeQuote;
+  for (const m of mov) {
+    if (m.size <= 0) continue;
+    if (m.side === "BUY") {
+      const recibido = m.size - m.feeBase;
+      qty += recibido; cost += m.monto + m.feeQuote;
+      buyQty += recibido; buyCost += m.monto + m.feeQuote;
     } else {
       const avg = qty > 1e-12 ? cost / qty : 0;
-      const usado = Math.min(size, Math.max(qty, 0));
-      realized += monto - feeQuote - avg * usado;
-      qty -= size; cost -= avg * usado;
+      const usado = Math.min(m.size, Math.max(qty, 0));
+      realized += m.monto - m.feeQuote - avg * usado;
+      qty -= m.size; cost -= avg * usado;
     }
   }
   const avg = qty > 1e-9 ? cost / qty : buyQty > 0 ? buyCost / buyQty : null;
-  return { qty, cost, realized, avg, nOrdenes: cron.length };
+  return { qty, cost, realized, avg, nOrdenes: mov.length, nManuales: extra.length };
 }
 
 export function saldos() {

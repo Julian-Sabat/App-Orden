@@ -43,7 +43,10 @@ function pionexActivo() {
 
 // Grupos de CoinMarketCap (los de Pionex se tratan aparte: no tienen base de costo propia).
 function gruposCMC() {
-  return [...new Set(INVM.INV.transactions.map(INVM.grupoDe))].sort();
+  // Las operaciones manuales de Pionex viven en la misma tabla pero no son un grupo de CMC:
+  // ese bloque se arma aparte, con lo que entrega la API.
+  return [...new Set(INVM.INV.transactions.map(INVM.grupoDe))]
+    .filter((k) => k !== INVM.PIONEX).sort();
 }
 
 // ---------- Hoja: Resumen ----------

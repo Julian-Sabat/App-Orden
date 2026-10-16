@@ -174,9 +174,31 @@ export function labelGrupo(key) {
   return labels[key] || (key === PIONEX ? "Pionex" : key);
 }
 
+// Operaciones de Pionex cargadas a mano: van a inv_transactions con el grupo reservado
+// PIONEX. Existen porque la API no entrega las compras "Smart Market" (ni en allOrders ni
+// en fills), así que sin ellas el costo de ese saldo sale incompleto.
+export function txPionex(sym) {
+  return INV.transactions.filter((t) => grupoDe(t) === PIONEX && (!sym || t.symbol === sym));
+}
+
+// Las mismas, con la forma que espera PXM.costoDe (cantidad ya neta, sin comisión aparte).
+function movsPionex(sym) {
+  return txPionex(sym).map((t) => {
+    const amount = Number(t.amount) || 0;
+    const total = t.total_value == null
+      ? (t.price == null ? 0 : Number(t.price) * amount)
+      : Number(t.total_value);
+    return {
+      side: t.type === "sell" || t.type === "transferOut" ? "SELL" : "BUY",
+      size: amount, monto: total, feeBase: 0, feeQuote: 0, ts: Date.parse(t.ts) || 0,
+    };
+  });
+}
+
 // Grupos existentes, ordenados por valor de sus posiciones abiertas.
 export function grupos() {
-  const keys = [...new Set(INV.transactions.map(grupoDe))];
+  // El grupo Pionex no sale de las transacciones (solo tiene las manuales): se agrega aparte.
+  const keys = [...new Set(INV.transactions.map(grupoDe))].filter((k) => k !== PIONEX);
   if (pionexActivo()) keys.push(PIONEX);
   return keys
     .map((k) => ({ key: k, label: labelGrupo(k), valor: resumen(k).valor }))
@@ -188,7 +210,10 @@ export function grupos() {
 // que en CoinMarketCap, así el promedio de un token no se mezcla entre portafolios.
 export function positions(pf) {
   const bySym = new Map();
-  const base = pf ? INV.transactions.filter((t) => grupoDe(t) === pf) : INV.transactions;
+  // Sin filtro de grupo quedan fuera las manuales de Pionex: esas posiciones se arman con
+  // el saldo que entrega la API (positionsPionex), no sumando movimientos.
+  const base = pf ? INV.transactions.filter((t) => grupoDe(t) === pf)
+                  : INV.transactions.filter((t) => grupoDe(t) !== PIONEX);
   const orden = [...base].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
 
   for (const t of orden) {
@@ -254,7 +279,7 @@ function positionsPionex() {
   return PXM.saldos()
     .map(({ coin, qty }) => {
       const px = PXM.usdDe(coin) ?? priceOf(coin);
-      const c = PXM.costoDe(coin);
+      const c = PXM.costoDe(coin, movsPionex(coin));
       // El costo promedio sale de las órdenes, pero se aplica al saldo real: si la moneda
       // además entró por un bot o una transferencia, las órdenes no explican todo el saldo.
       const cost = c && c.avg != null ? c.avg * qty : 0;
@@ -977,12 +1002,13 @@ function filaPosicion(p, valorTotal) {
       <div><span>Costo total</span><b>${p.cost > 0 ? money(p.cost) : "—"}</b></div>
       <div><span>No realizado</span><b class="${signo(p.unrealized)}">${p.cost > 0 ? `${money(p.unrealized)} (${fmtPct(p.unrealizedPct)})` : "—"}</b></div>
       <div><span>Realizado</span><b class="${signo(p.realized)}">${p.nTx ? money(p.realized) : "—"}</b></div>
-      <div><span>Órdenes spot</span><b>${p.nTx || "—"}</b></div>
+      <div><span>Operaciones</span><b>${p.nTx || "—"}</b></div>
       <div class="inv-detalle-acciones">
+        <button class="btn-small" data-action="inv-px-op" data-sym="${esc(p.symbol)}">Cargar operación</button>
         <button class="btn-small" data-action="inv-token" data-sym="${esc(p.symbol)}">Precio / fuente</button>
       </div>
-      ${p.parcial ? `<div class="inv-detalle-aviso">El saldo no coincide con las órdenes de compra: parte puede venir de un bot o de una transferencia, así que el costo es aproximado.</div>` : ""}
-      ${p.nTx ? "" : `<div class="inv-detalle-aviso">Sin órdenes de compra en Pionex para esta moneda: no hay costo que calcular.</div>`}
+      ${p.parcial ? `<div class="inv-detalle-aviso">El saldo no coincide con las operaciones conocidas: la API de Pionex no entrega las compras "Smart Market" ni las transferencias, así que el costo es aproximado. Cargá a mano la que falte.</div>` : ""}
+      ${p.nTx ? "" : `<div class="inv-detalle-aviso">Sin operaciones de compra en Pionex para esta moneda: no hay costo que calcular. Si la compraste con una orden "Smart Market", cargála a mano.</div>`}
     </div>` : abierto ? `
     <div class="inv-detalle">
       <div><span>Cantidad</span><b>${fmtQty(p.qty)}</b></div>
@@ -1035,10 +1061,13 @@ function vistaHistorial(r) {
     ${symbols.map((s) => `<button class="fchip ${INV.filterSymbol === s ? "active" : ""}" data-action="inv-filtro" data-sym="${esc(s)}">${esc(s)}</button>`).join("")}
   </div>`;
 
-  if (INV.filterPortfolio === PIONEX) {
-    return chipsGrupo() + `<div class="empty">Pionex se lee en vivo desde su API: muestra saldos y bots, no un historial de movimientos. Sus órdenes spot sí van en el Excel.</div>` + accionesInv(false);
+  const soloPionex = INV.filterPortfolio === PIONEX;
+  const avisoPionex = soloPionex
+    ? `<div class="empty">Pionex se lee en vivo desde su API: muestra saldos y bots, no un historial. Acá solo están las operaciones cargadas a mano — las que la API no entrega, como las compras "Smart Market". Las órdenes spot sí van en el Excel.</div>`
+    : "";
+  if (!tx.length) {
+    return chipsGrupo() + (soloPionex ? "" : chips) + (avisoPionex || `<div class="empty">Sin movimientos.</div>`) + accionesInv(false);
   }
-  if (!tx.length) return chipsGrupo() + chips + `<div class="empty">Sin movimientos.</div>` + accionesInv(false);
 
   const filas = tx.map((t) => {
     const total = t.total_value == null ? null : Number(t.total_value);
@@ -1049,7 +1078,8 @@ function vistaHistorial(r) {
           <div class="inv-tx-top">
             <span class="inv-tipo ${t.type}">${TIPO_LABEL[t.type] || t.type}</span>
             <span class="inv-sym">${esc(t.symbol)}</span>
-            ${t.source === "cmc" ? `<span class="inv-origen">CMC</span>` : ""}
+            ${grupoDe(t) === PIONEX ? `<span class="inv-origen">Pionex</span>`
+              : t.source === "cmc" ? `<span class="inv-origen">CMC</span>` : ""}
           </div>
           <div class="inv-tx-sub">${fmtFecha(t.ts)} · ${fmtQty(Number(t.amount))} @ ${fmtPrice(t.price == null ? null : Number(t.price))}</div>
         </div>
@@ -1061,7 +1091,7 @@ function vistaHistorial(r) {
     </article>`;
   }).join("");
 
-  return chipsGrupo() + chips + `<div class="inv-tx-list">${filas}</div>` + accionesInv(false);
+  return chipsGrupo() + chips + avisoPionex + `<div class="inv-tx-list">${filas}</div>` + accionesInv(false);
 }
 
 // ---------- Modales ----------
@@ -1116,6 +1146,43 @@ function modalTrade() {
       <label>Total USD (si lo dejas vacío se calcula cantidad × precio)
         <input type="number" name="total_value" step="any" placeholder="opcional" /></label>
       <label>Portafolio<input type="text" name="portfolio" value="${esc(pf)}" /></label>
+      <div class="modal-actions">
+        <button type="button" class="btn-small" data-action="close-modal">Cancelar</button>
+        <button type="submit" class="btn-primary">Guardar</button>
+      </div>
+    </form>`;
+}
+
+// Operación manual de un saldo de Pionex: fecha, compra/venta, cantidad y precio. Sin
+// comisión: la cantidad que se carga es la que entró al saldo, o sea ya neta. Se guarda
+// como un movimiento del grupo Pionex (lo toma el mismo handler que el modal de trade).
+function modalTradePionex(sym) {
+  const hoy = new Date();
+  const fecha = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`;
+  const hora = `${String(hoy.getHours()).padStart(2, "0")}:${String(hoy.getMinutes()).padStart(2, "0")}`;
+  const n = txPionex(sym).length;
+  return `<h2>${esc(sym)} · operación manual</h2>
+    <form data-form="inv-trade">
+      <input type="hidden" name="portfolio" value="${esc(PIONEX)}" />
+      <input type="hidden" name="symbol" value="${esc(sym)}" />
+      <div class="form-row">
+        <label>Tipo<select name="type">
+          <option value="buy">Compra</option><option value="sell">Venta</option>
+        </select></label>
+        <label>Fecha<input type="date" name="date" value="${fecha}" required /></label>
+      </div>
+      <div class="form-row">
+        <label>Hora<input type="time" name="time" value="${hora}" /></label>
+        <label>Cantidad<input type="number" name="amount" step="any" required /></label>
+      </div>
+      <div class="form-row">
+        <label>Precio USD<input type="number" name="price" step="any" required /></label>
+        <label>Total USD<input type="number" name="total_value" step="any" placeholder="opcional" /></label>
+      </div>
+      <p class="hint">Para lo que la API de Pionex no entrega, como las compras "Smart Market".
+      La cantidad es la que entró al saldo (ya sin comisión). El costo sale de cantidad × precio,
+      salvo que pongas el total: ahí va el monto exacto que muestra Pionex (columna Volumen).
+      ${n ? `Ya hay ${n} cargada${n === 1 ? "" : "s"}: se ven y se borran en Historial.` : ""}</p>
       <div class="modal-actions">
         <button type="button" class="btn-small" data-action="close-modal">Cancelar</button>
         <button type="submit" class="btn-primary">Guardar</button>
@@ -1228,6 +1295,8 @@ export async function handleAction(a, el) {
   }
 
   if (a === "inv-trade") { ctx.openModal(modalTrade()); return true; }
+
+  if (a === "inv-px-op") { ctx.openModal(modalTradePionex(el.dataset.sym)); return true; }
 
   if (a === "inv-token") { ctx.openModal(modalToken(el.dataset.sym)); return true; }
 

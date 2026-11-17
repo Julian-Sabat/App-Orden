@@ -253,6 +253,12 @@ export function normalizarBot(raw, cerrado) {
     // el %) y el retirado (sube el actual). Sin dato del capital inicial no hay "agregado"
     // que netear, y en los bots con bono el capital no es tuyo.
     const neteo = init == null || bot.bono ? 0 : Math.max(0, Math.min(bot.retirado, bot.capAgregado));
+    // Margen extra (`extraMargin`): plata que solo aleja la liquidación, no opera en la
+    // grilla. Va aparte para mostrar el % sobre lo invertido. El neteo descuenta primero
+    // de lo agregado sin margen; si no alcanza, el resto sale del margen.
+    const margenBruto = z(d.extraMargin) * qUsd;
+    const agregadoSinMargen = bot.capAgregado - margenBruto;
+    bot.margen = margenBruto - Math.max(0, neteo - Math.max(0, agregadoSinMargen));
     bot.reinvertidoManual = neteo;
     bot.retirado -= neteo;
     bot.capAgregado -= neteo;
@@ -298,7 +304,11 @@ export function normalizarBot(raw, cerrado) {
       bot.valor = 0;
     }
   }
+  // `inversion` incluye el margen extra; `invertido` es sin él.
+  bot.margen = bot.inversion > 0 ? Math.min(Math.max(0, bot.margen || 0), bot.inversion) : 0;
+  bot.invertido = bot.inversion - bot.margen;
   bot.pnlTotalPct = bot.pnlTotal != null && bot.inversion > 0 ? (bot.pnlTotal / bot.inversion) * 100 : null;
+  bot.pnlTotalPctSinMargen = bot.pnlTotal != null && bot.invertido > 0 ? (bot.pnlTotal / bot.invertido) * 100 : null;
   bot.pnlActualPct = bot.pnlActual != null && bot.inversion > 0 ? (bot.pnlActual / bot.inversion) * 100 : null;
   return bot;
 }

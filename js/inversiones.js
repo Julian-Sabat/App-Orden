@@ -925,15 +925,19 @@ function filaBot(b) {
   // Desglose del capital. Las tres celdas van siempre, con "—" cuando no hay nada:
   // así cada dato queda en el mismo lugar en todos los bots.
   const opc = (v) => (Math.abs(v) > 0.01 ? Math.abs(v) : null);
+  // El margen extra va en su propia celda: lo agregado acá es sin él, y suma "Invertido".
+  const agregado = b.capAgregado - b.margen;
   const capital = b.capInicial == null ? "" :
     `<div><span>Capital inicial</span><b>${money(b.capInicial)}</b></div>
-     <div><span>${b.capAgregado < -0.01 ? "Sacado después" : "Agregado después"}</span><b>${money(opc(b.capAgregado))}</b></div>
+     <div><span>${agregado < -0.01 ? "Sacado después" : "Agregado después"}</span><b>${money(opc(agregado))}</b></div>
      <div><span>Ganancia reinvertida</span><b>${money(opc(b.reinvertido + b.reinvertidoManual))}${
        b.reinvertidoManual > 0.01 ? ` <small>(${money(b.reinvertidoManual)} a mano)</small>` : ""}</b></div>`;
 
   const detalle = abierto ? `
     <div class="inv-detalle">
-      <div><span>Inversión</span><b>${money(b.inversion)}</b></div>
+      <div><span>Invertido</span><b>${money(b.invertido)}</b></div>
+      <div><span>Margen</span><b>${money(opc(b.margen))}</b></div>
+      <div><span>Rentab. con margen</span><b class="${signo(b.pnlTotal)}">${fmtPct(b.pnlTotalPct)}</b></div>
       ${capital}
       <div><span>Retirado</span><b>${money(b.retirado)}</b></div>
       <div><span>Profit de grilla</span><b class="${signo(b.profitGrilla)}">${money(b.profitGrilla)}${
@@ -963,7 +967,7 @@ function filaBot(b) {
       </div>
       <div class="inv-pos-num">
         <span class="inv-val">${money(b.valor)}</span>
-        <span class="inv-pnl ${signo(b.pnlTotal)}">${b.pnlTotal == null ? "sin precio" : fmtPct(b.pnlTotalPct)}</span>
+        <span class="inv-pnl ${signo(b.pnlTotal)}">${b.pnlTotal == null ? "sin precio" : fmtPct(b.pnlTotalPctSinMargen)}</span>
       </div>
     </div>
     ${detalle}
